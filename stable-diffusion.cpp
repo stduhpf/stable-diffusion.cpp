@@ -796,11 +796,11 @@ public:
                         const std::vector<float>& sigmas,
                         int start_merge_step,
                         SDCondition id_cond,
-                        std::vector<int> skip_layers = {},
-                        float slg_scale              = 0,
-                        float skip_layer_start       = 0.01,
-                        float skip_layer_end         = 0.2,
-                        ggml_tensor* noise_mask      = nullptr,
+                        std::vector<int> skip_layers                                    = {},
+                        float slg_scale                                                 = 0,
+                        float skip_layer_start                                          = 0.01,
+                        float skip_layer_end                                            = 0.2,
+                        ggml_tensor* noise_mask                                         = nullptr,
                         std::function<void(int, ggml_tensor*, SDVersion)> step_callback = nullptr) {
         size_t steps = sigmas.size() - 1;
         // noise = load_tensor_from_file(work_ctx, "./rand0.bin");
@@ -1196,11 +1196,11 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
                            float style_ratio,
                            bool normalize_input,
                            std::string input_id_images_path,
-                           std::vector<int> skip_layers = {},
-                           float slg_scale              = 0,
-                           float skip_layer_start       = 0.01,
-                           float skip_layer_end         = 0.2,
-                           ggml_tensor* masked_image    = NULL,
+                           std::vector<int> skip_layers                                    = {},
+                           float slg_scale                                                 = 0,
+                           float skip_layer_start                                          = 0.01,
+                           float skip_layer_end                                            = 0.2,
+                           ggml_tensor* masked_image                                       = NULL,
                            std::function<void(int, ggml_tensor*, SDVersion)> step_callback = nullptr) {
     if (seed < 0) {
         // Generally, when using the provided command line, the seed is always >0.
@@ -1531,7 +1531,7 @@ sd_image_t* txt2img(sd_ctx_t* sd_ctx,
                     float slg_scale          = 0,
                     float skip_layer_start   = 0.01,
                     float skip_layer_end     = 0.2,
-                    step_callback_t step_callback) {
+                    step_callback_t step_callback = NULL) {
     std::vector<int> skip_layers_vec(skip_layers, skip_layers + skip_layers_count);
     LOG_DEBUG("txt2img %dx%d", width, height);
     if (sd_ctx == NULL) {
@@ -1642,7 +1642,8 @@ sd_image_t* img2img(sd_ctx_t* sd_ctx,
                     size_t skip_layers_count = 0,
                     float slg_scale          = 0,
                     float skip_layer_start   = 0.01,
-                    float skip_layer_end     = 0.2) {
+                    float skip_layer_end     = 0.2,
+                    step_callback_t step_callback = NULL) {
     std::vector<int> skip_layers_vec(skip_layers, skip_layers + skip_layers_count);
     LOG_DEBUG("img2img %dx%d", width, height);
     if (sd_ctx == NULL) {
@@ -1788,7 +1789,8 @@ sd_image_t* img2img(sd_ctx_t* sd_ctx,
                                                slg_scale,
                                                skip_layer_start,
                                                skip_layer_end,
-                                               masked_image);
+                                               masked_image,
+                                               step_callback);
 
     size_t t2 = ggml_time_ms();
 
@@ -1810,7 +1812,8 @@ SD_API sd_image_t* img2vid(sd_ctx_t* sd_ctx,
                            enum sample_method_t sample_method,
                            int sample_steps,
                            float strength,
-                           int64_t seed) {
+                           int64_t seed,
+                           step_callback_t step_callback = NULL) {
     if (sd_ctx == NULL) {
         return NULL;
     }
@@ -1889,7 +1892,10 @@ SD_API sd_image_t* img2vid(sd_ctx_t* sd_ctx,
                                                  sample_method,
                                                  sigmas,
                                                  -1,
-                                                 SDCondition(NULL, NULL, NULL));
+                                                 SDCondition(NULL, NULL, NULL),
+                                                 {},
+                                                 0, 0, 0,
+                                                 step_callback);
 
     int64_t t2 = ggml_time_ms();
     LOG_INFO("sampling completed, taking %.2fs", (t2 - t1) * 1.0f / 1000);
