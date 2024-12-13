@@ -1416,6 +1416,7 @@ void start_server(SDParams params) {
                                   params.lastRequest.clip_skip,
                                   params.lastRequest.cfg_scale,
                                   params.lastRequest.guidance,
+                                  0.,
                                   params.lastRequest.width,
                                   params.lastRequest.height,
                                   params.lastRequest.sample_method,
