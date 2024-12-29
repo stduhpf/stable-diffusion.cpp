@@ -1739,6 +1739,7 @@ sd_image_t* txt2img(sd_ctx_t* sd_ctx,
                                                slg_scale,
                                                skip_layer_start,
                                                skip_layer_end,
+                                               NULL,
                                                preview_mode,
                                                preview_interval,
                                                step_callback);
@@ -2029,7 +2030,7 @@ SD_API sd_image_t* img2vid(sd_ctx_t* sd_ctx,
                                                  -1,
                                                  SDCondition(NULL, NULL, NULL),
                                                  {},
-                                                 0, 0, 0,
+                                                 0, 0, 0, NULL,
                                                  (sd_preview_policy_t)0, 1,
                                                  NULL);
 
