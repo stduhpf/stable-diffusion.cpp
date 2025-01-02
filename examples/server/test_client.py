@@ -46,7 +46,7 @@ def show_img(img: Image, title = None) -> None:
     for viewer in ImageShow._viewers:
         if viewer.show_file(tmp,title=title):
             return
-
+        
 _protocol = "http"
 _server = "localhost"
 _port = 8080
@@ -85,15 +85,16 @@ def update_url(protocol=None, server=None, port=None, endpoint=None) -> str:
 # set default url value
 update_url()
 
-def poll_result(id: str):
+def poll_result(id: str, show_previews : bool = False):
     global _protocol
     global _server
     global _port
-
     res = {'status':""}
     while res['status'] != "Done":
         time.sleep(0.1)
         res = requests.post(f"{_protocol}://{_server}:{_port}/result", json.dumps({'task_id':id})).json()
+        if(show_previews and res['status'] == "Working" and len(res['data'])>0):
+            showImages(getImages(json.dumps(res['data'])))
         
     return json.dumps(res['data'])
 
