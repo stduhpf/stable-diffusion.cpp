@@ -62,6 +62,13 @@ const char* schedule_str[] = {
     "gits",
 };
 
+const char* previews_str[] = {
+    "none",
+    "proj",
+    "tae",
+    "vae",
+};
+
 enum SDMode {
     TXT2IMG,
     IMG2IMG,
@@ -127,6 +134,9 @@ struct SDRequestParams {
     float skip_layer_start       = 0.01;
     float skip_layer_end         = 0.2;
     bool normalize_input         = false;
+
+    sd_preview_policy_t preview_method = SD_PREVIEW_NONE;
+    int preview_interval               = 1;
 };
 
 struct SDParams {
@@ -139,8 +149,12 @@ struct SDParams {
     std::string input_path         = "./server/input.png";
     std::string control_image_path = "./server/control.png";
 
+    std::string preview_path = "./server/preview.png";
+
     // external dir
     std::string input_id_images_path;
+
+    bool taesd_preview = false;
 
     bool verbose = false;
 
@@ -163,6 +177,7 @@ void print_params(SDParams params) {
     printf("    diffusion_model_path:   %s\n", params.ctxParams.diffusion_model_path.c_str());
     printf("    vae_path:          %s\n", params.ctxParams.vae_path.c_str());
     printf("    taesd_path:        %s\n", params.ctxParams.taesd_path.c_str());
+    printf("  --taesd-preview-only               prevents usage of taesd for decoding the final image. (for use with --preview %s)\n", previews_str[SD_PREVIEW_TAE]);
     printf("    controlnet_path:   %s\n", params.ctxParams.controlnet_path.c_str());
     printf("    embeddings_path:   %s\n", params.ctxParams.embeddings_path.c_str());
     printf("    stacked_id_embeddings_path:   %s\n", params.ctxParams.stacked_id_embeddings_path.c_str());
@@ -314,6 +329,8 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 break;
             }
             params.ctxParams.taesd_path = argv[i];
+        } else if (arg == "--taesd-preview-only") {
+            params.taesd_preview = true;
         } else if (arg == "--control-net") {
             if (++i >= argc) {
                 invalid_arg = true;
@@ -599,6 +616,35 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 break;
             }
             params.lastRequest.skip_layer_end = std::stof(argv[i]);
+        } else if (arg == "--preview") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            const char* preview = argv[i];
+            int preview_method  = -1;
+            for (int m = 0; m < N_PREVIEWS; m++) {
+                if (!strcmp(preview, previews_str[m])) {
+                    preview_method = m;
+                }
+            }
+            if (preview_method == -1) {
+                invalid_arg = true;
+                break;
+            }
+            params.lastRequest.preview_method = (sd_preview_policy_t)preview_method;
+        } else if (arg == "--preview-interval") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.lastRequest.preview_interval = std::stoi(argv[i]);
+        } else if (arg == "--preview-path") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.preview_path = argv[i];
         } else if (arg == "--port") {
             if (++i >= argc) {
                 invalid_arg = true;
@@ -865,6 +911,10 @@ void add_task(std::string task_id, std::function<void()> task) {
     });
     queue_cond.notify_one();
 }
+const char* preview_path;
+void step_callback(int step, sd_image_t image) {
+    stbi_write_png(preview_path, image.width, image.height, image.channel, image.data, 0);
+}
 
 void start_server(SDParams params) {
     sd_set_log_callback(sd_log_cb, (void*)&params);
@@ -897,7 +947,9 @@ void start_server(SDParams params) {
                                   params.ctxParams.clip_on_cpu,
                                   params.ctxParams.control_net_cpu,
                                   params.ctxParams.vae_on_cpu,
-                                  params.ctxParams.diffusion_flash_attn);
+                                  params.ctxParams.diffusion_flash_attn,
+                                  // keep all autoencoders loaded just in case
+                                  true);
 
     if (sd_ctx == NULL) {
         printf("new_sd_ctx_t failed\n");
@@ -933,6 +985,8 @@ void start_server(SDParams params) {
 
         std::lock_guard<std::mutex> results_lock(results_mutex);
         task_results[task_id] = pending_task_json;
+
+        preview_path = params.preview_path.c_str();
 
         auto task = [&req, &sd_ctx, &params, &n_prompts, task_id]() {
             // LOG_DEBUG("raw body is: %s\n", req.body.c_str());
@@ -993,7 +1047,10 @@ void start_server(SDParams params) {
                                   params.lastRequest.skip_layers.size(),
                                   params.lastRequest.slg_scale,
                                   params.lastRequest.skip_layer_start,
-                                  params.lastRequest.skip_layer_end);
+                                  params.lastRequest.skip_layer_end,
+                                  params.lastRequest.preview_method,
+                                  params.lastRequest.preview_interval,
+                                  (step_callback_t)step_callback);
 
                 if (results == NULL) {
                     printf("generate failed\n");
