@@ -895,8 +895,8 @@ void worker_thread() {
         queue_cond.wait(lock, [] { return !task_queue.empty() || stop_worker; });
 
         if (!task_queue.empty()) {
-            is_busy = true;
-            auto task       = task_queue.front();
+            is_busy   = true;
+            auto task = task_queue.front();
             task_queue.pop();
             lock.unlock();
             task();
@@ -914,7 +914,29 @@ void add_task(std::string task_id, std::function<void()> task) {
 }
 const char* preview_path;
 void step_callback(int step, sd_image_t image) {
-    stbi_write_png(preview_path, image.width, image.height, image.channel, image.data, 0);
+    using json = nlohmann::json;
+    if (preview_path) {
+        stbi_write_png(preview_path, image.width, image.height, image.channel, image.data, 0);
+    }
+
+    json task_json      = json::object();
+    task_json["status"] = "Working";
+    task_json["data"]   = json::array();
+    task_json["step"]   = step;
+    task_json["eta"]    = "?";
+
+    int len;
+    unsigned char* png = stbi_write_png_to_mem((const unsigned char*)image.data, 0, image.width, image.height, image.channel, &len, NULL);
+    std::string data_str(png, png + len);
+    std::string encoded_img = base64_encode(data_str);
+    task_json["data"].push_back({{"width", image.width},
+                                 {"height", image.height},
+                                 {"channel", image.channel},
+                                 {"data", encoded_img},
+                                 {"encoding", "png"}});
+
+    std::lock_guard<std::mutex> results_lock(results_mutex);
+    task_results[running_task_id] = task_json;
 }
 
 void start_server(SDParams params) {
