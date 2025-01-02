@@ -91,8 +91,7 @@ def poll_result(id: str, show_previews : bool = False):
     global _port
     res = {'status':""}
     while res['status'] != "Done":
-        time.sleep(0.1)
-        res = requests.post(f"{_protocol}://{_server}:{_port}/result", json.dumps({'task_id':id})).json()
+        res = requests.get(f"{_protocol}://{_server}:{_port}/result", params={'task_id':id}, timeout=.25).json()
         if(show_previews and res['status'] == "Working" and len(res['data'])>0):
             showImages(getImages(json.dumps(res['data'])))
         
@@ -112,7 +111,7 @@ def sendRequest(payload: str) -> str:
     str: The text content of the response from the POST request.
     """
     global url
-    return requests.post(url, payload).json()['task_id']
+    return requests.post(url, payload).json()[  ]
 
 def getImages(response: str) -> List[Image.Image]:
     """
