@@ -532,7 +532,7 @@ const std::string html_content = R"xxx(
                 ... { vae_tiling: vae_tiling },
                 ... { tae_decode: tae_decode },
                 ...(preview_mode && { preview_mode: preview_mode }),
-                ...(preview_interval && { preview_interval: preview_interval }),
+                ...(preview_interval && { preview_interval: parseInt(preview_interval) }),
             };
 
             const response = await fetch('/txt2img', {
