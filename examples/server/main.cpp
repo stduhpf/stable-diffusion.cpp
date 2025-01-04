@@ -1135,6 +1135,7 @@ void step_callback(int step, sd_image_t image) {
 }
 
 void start_server(SDParams params) {
+    preview_path = params.preview_path.c_str();
     sd_set_log_callback(sd_log_cb, (void*)&params);
 
     server_log_params = (void*)&params;
@@ -1177,9 +1178,8 @@ void start_server(SDParams params) {
             std::lock_guard<std::mutex> results_lock(results_mutex);
             task_results[task_id] = pending_task_json;
         }
-        preview_path = params.preview_path.c_str();
 
-        auto task = [&req, &sd_ctx, &params, &n_prompts, task_id]() {
+        auto task = [req, &sd_ctx, &params, &n_prompts, task_id]() {
             running_task_id = task_id;
             // LOG_DEBUG("raw body is: %s\n", req.body.c_str());
             sd_log(sd_log_level_t::SD_LOG_DEBUG, "raw body is: %s\n", req.body.c_str());
@@ -1204,7 +1204,7 @@ void start_server(SDParams params) {
                 sd_log(sd_log_level_t::SD_LOG_ERROR, "An unexpected error occurred\n");
             }
             // LOG_DEBUG("prompt is: %s\n", params.prompt.c_str());
-            sd_log(sd_log_level_t::SD_LOG_DEBUG, "prompt is: %s\n", params.lastRequest.prompt.c_str());
+            sd_log(sd_log_level_t::SD_LOG_INFO, "prompt is: %s\n", params.lastRequest.prompt.c_str());
 
             if (updateCTX && sd_ctx != NULL) {
                 free_sd_ctx(sd_ctx);
