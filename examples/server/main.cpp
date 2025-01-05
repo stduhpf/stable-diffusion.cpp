@@ -1170,11 +1170,13 @@ void step_callback(int step, sd_image_t image) {
         stbi_write_png(preview_path, image.width, image.height, image.channel, image.data, 0);
     }
 
-    json task_json      = json::object();
+    json task_json = task_results[running_task_id];
+    if (task_json == NULL) {
+        // shouldn't happen
+        task_json = json::object();
+    }
     task_json["status"] = "Working";
     task_json["data"]   = json::array();
-    task_json["step"]   = step;
-    task_json["eta"]    = "?";
 
     int len;
     unsigned char* png = stbi_write_png_to_mem((const unsigned char*)image.data, 0, image.width, image.height, image.channel, &len, NULL);
@@ -1413,7 +1415,7 @@ void start_server(SDParams params) {
                 end_task_json["status"] = "Done";
                 end_task_json["data"]   = images_json;
                 end_task_json["step"]   = -1;
-                end_task_json["steps"]   = 0;
+                end_task_json["steps"]  = 0;
                 end_task_json["eta"]    = "?";
                 std::lock_guard<std::mutex> results_lock(results_mutex);
                 task_results[task_id] = end_task_json;
