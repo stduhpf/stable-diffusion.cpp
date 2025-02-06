@@ -139,8 +139,8 @@ struct SDRequestParams {
     float skip_layer_end         = 0.2;
     bool normalize_input         = false;
 
-    sd_preview_policy_t preview_method = SD_PREVIEW_NONE;
-    int preview_interval               = 1;
+    sd_preview_t preview_method = SD_PREVIEW_NONE;
+    int preview_interval        = 1;
 };
 
 struct SDParams {
@@ -649,7 +649,7 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 invalid_arg = true;
                 break;
             }
-            params.lastRequest.preview_method = (sd_preview_policy_t)preview_method;
+            params.lastRequest.preview_method = (sd_preview_t)preview_method;
         } else if (arg == "--preview-interval") {
             if (++i >= argc) {
                 invalid_arg = true;
@@ -1118,8 +1118,8 @@ bool parseJsonPrompt(std::string json_str, SDParams* params) {
             }
         }
         if (preview_found >= 0) {
-            if (params->lastRequest.preview_method != (sd_preview_policy_t)preview_found) {
-                params->lastRequest.preview_method = (sd_preview_policy_t)preview_found;
+            if (params->lastRequest.preview_method != (sd_preview_t)preview_found) {
+                params->lastRequest.preview_method = (sd_preview_t)preview_found;
             }
         } else {
             sd_log(sd_log_level_t::SD_LOG_WARN, "Unknown preview: %s\n", preview.c_str());
@@ -1324,7 +1324,7 @@ void start_server(SDParams params) {
                 std::string json_str = req.body;
                 sd_log(sd_log_level_t::SD_LOG_WARN, "About to parse for real\n");
 
-                updateCTX            = parseJsonPrompt(json_str, &params);
+                updateCTX = parseJsonPrompt(json_str, &params);
                 sd_log(sd_log_level_t::SD_LOG_WARN, "parsed\n");
             } catch (json::parse_error& e) {
                 // assume the request is just a prompt
@@ -1408,6 +1408,7 @@ void start_server(SDParams params) {
             }
 
             {
+                sd_set_preview_callback((sd_preview_cb_t)step_callback, params.lastRequest.preview_method, params.lastRequest.preview_interval);
                 sd_image_t* results;
                 results = txt2img(sd_ctx,
                                   params.lastRequest.prompt.c_str(),
@@ -1430,10 +1431,7 @@ void start_server(SDParams params) {
                                   params.lastRequest.skip_layers.size(),
                                   params.lastRequest.slg_scale,
                                   params.lastRequest.skip_layer_start,
-                                  params.lastRequest.skip_layer_end,
-                                  params.lastRequest.preview_method,
-                                  params.lastRequest.preview_interval,
-                                  (step_callback_t)step_callback);
+                                  params.lastRequest.skip_layer_end);
 
                 if (results == NULL) {
                     printf("generate failed\n");
