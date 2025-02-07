@@ -54,6 +54,8 @@ const char* sample_method_str[] = {
     "ipndm",
     "ipndm_v",
     "lcm",
+    "ddim_trailing",
+    "tcd",
 };
 
 // Names of the sigma schedule overrides, same order as sample_schedule in stable-diffusion.h
@@ -111,6 +113,7 @@ struct SDCtxParams {
 
 struct SDRequestParams {
     // TODO set to true if esrgan_path is specified in args
+    // TODO: eta for ddim/tcd
     bool upscale = false;
 
     SDMode mode = TXT2IMG;
