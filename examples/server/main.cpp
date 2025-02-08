@@ -1321,14 +1321,10 @@ void start_server(SDParams params) {
             sd_log(sd_log_level_t::SD_LOG_INFO, "raw body is: %s\n", req.body.c_str());
             // parse req.body as json using jsoncpp
             bool updateCTX = false;
-            sd_log(sd_log_level_t::SD_LOG_WARN, "size : %d bytes\n", req.body.length());
             try {
-                sd_log(sd_log_level_t::SD_LOG_WARN, "About to parse\n");
                 std::string json_str = req.body;
-                sd_log(sd_log_level_t::SD_LOG_WARN, "About to parse for real\n");
 
                 updateCTX = parseJsonPrompt(json_str, &params);
-                sd_log(sd_log_level_t::SD_LOG_WARN, "parsed\n");
             } catch (json::parse_error& e) {
                 // assume the request is just a prompt
                 // LOG_WARN("Failed to parse json: %s\n Assuming it's just a prompt...\n", e.what());
