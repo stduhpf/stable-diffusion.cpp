@@ -140,6 +140,7 @@ struct SDParams {
     float apg_eta            = 1.0f;
     float apg_momentum       = 0.0f;
     float apg_norm_threshold = 0.0f;
+    float apg_norm_smoothing = 0.0f;
 
     sd_preview_t preview_method = SD_PREVIEW_NONE;
     int preview_interval        = 1;
@@ -233,8 +234,9 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --apg-eta VALUE                    parallel projected guidance scale for APG (default: 1.0, recommended: between 0 and 1)\n");
     printf("  --apg-momentum VALUE               CFG update direction momentum for APG (default: 0, recommended: around -0.5)\n");
     printf("  --apg-nt, --apg-rescale VALUE      CFG update direction norm threshold for APG (default: 0 = disabled, recommended: 4-15)\n");
-    printf("  --slg-scale SCALE                  skip layer guidance (SLG) scale, only for DiT models: (default: 0)\n");
-    printf("                                     0 means disabled, a value of 2.5 is nice for sd3.5 medium\n");
+    printf("  --apg-nt-smoothing VALUE           EXPERIMENTAL! Norm threshold smoothing for APG (default: 0 = disabled)\n");
+    printf("                                     (replaces saturation with a smooth approximation)\n");
+    printf("  --slg-scale SCALE                  skip layer guidance (SLG) scale, only for DiT models: (default: 0)0 means disabled, a value of 2.5 is nice for sd3.5 medium\n");
     printf("  --eta SCALE                        eta in DDIM, only for DDIM and TCD: (default: 0)\n");
     printf("  --skip-layers LAYERS               Layers to skip for SLG steps: (default: [7,8,9])\n");
     printf("  --skip-layer-start START           SLG enabling point: (default: 0.01)\n");
@@ -673,6 +675,12 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 break;
             }
             params.apg_norm_threshold = std::stof(argv[i]);
+        } else if (arg == "--apg-nt-smoothing") {
+            if (++i >= argc) {
+                invalid_arg = true;
+                break;
+            }
+            params.apg_norm_smoothing = std::stof(argv[i]);
         } else if (arg == "--preview") {
             if (++i >= argc) {
                 invalid_arg = true;
@@ -800,6 +808,9 @@ std::string get_image_params(SDParams params, int64_t seed) {
     }
     if (params.apg_norm_threshold != 0) {
         parameter_string += "CFG normalization threshold: " + std::to_string(params.apg_norm_threshold) + ", ";
+        if (params.apg_norm_smoothing != 0) {
+            parameter_string += "CFG normalization threshold: " + std::to_string(params.apg_norm_smoothing) + ", ";
+        }
     }
     if (params.slg_scale != 0 && params.skip_layers.size() != 0) {
         parameter_string += "SLG scale: " + std::to_string(params.cfg_scale) + ", ";
@@ -1061,7 +1072,8 @@ int main(int argc, const char* argv[]) {
                                           params.skip_layer_end},
                           sd_apg_params_t{params.apg_eta,
                                           params.apg_momentum,
-                                          params.apg_norm_threshold});
+                                          params.apg_norm_threshold,
+                                          params.apg_norm_smoothing});
     } else {
         sd_image_t input_image = {(uint32_t)params.width,
                                   (uint32_t)params.height,
@@ -1133,7 +1145,8 @@ int main(int argc, const char* argv[]) {
                                               params.skip_layer_end},
                               sd_apg_params_t{params.apg_eta,
                                               params.apg_momentum,
-                                              params.apg_norm_threshold});
+                                              params.apg_norm_threshold,
+                                              params.apg_norm_smoothing});
         }
     }
 
