@@ -127,6 +127,20 @@ typedef struct {
     uint8_t* data;
 } sd_image_t;
 
+typedef struct {
+    float eta;
+    float momentum;
+    float norm_treshold;
+} sd_apg_params_t;
+
+typedef struct {
+    int* skip_layers;
+    size_t skip_layers_count;
+    float scale;
+    float skip_layer_start;
+    float skip_layer_end;
+} sd_slg_params_t;
+
 typedef void (*sd_log_cb_t)(enum sd_log_level_t level, const char* text, void* data);
 typedef void (*sd_progress_cb_t)(int step, int steps, float time, void* data);
 typedef void (*sd_preview_cb_t)(int, sd_image_t);
@@ -184,11 +198,8 @@ SD_API sd_image_t* txt2img(sd_ctx_t* sd_ctx,
                            float style_strength,
                            bool normalize_input,
                            const char* input_id_images_path,
-                           int* skip_layers,
-                           size_t skip_layers_count,
-                           float slg_scale,
-                           float skip_layer_start,
-                           float skip_layer_end);
+                           sd_slg_params_t slg_params,
+                           sd_apg_params_t apg_params);
 
 SD_API sd_image_t* img2img(sd_ctx_t* sd_ctx,
                            sd_image_t init_image,
@@ -211,11 +222,8 @@ SD_API sd_image_t* img2img(sd_ctx_t* sd_ctx,
                            float style_strength,
                            bool normalize_input,
                            const char* input_id_images_path,
-                           int* skip_layers,
-                           size_t skip_layers_count,
-                           float slg_scale,
-                           float skip_layer_start,
-                           float skip_layer_end);
+                           sd_slg_params_t slg_params,
+                           sd_apg_params_t apg_params);
 
 SD_API sd_image_t* img2vid(sd_ctx_t* sd_ctx,
                            sd_image_t init_image,
