@@ -869,13 +869,64 @@ bool parseJsonPrompt(std::string json_str, SDParams* params) {
     } catch (...) {
     }
     try {
-        float cfg_scale               = payload["cfg_scale"];
-        params->lastRequest.cfg_scale = cfg_scale;
-    } catch (...) {
-    }
-    try {
-        float guidance               = payload["guidance"];
-        params->lastRequest.guidance = guidance;
+        json guidance_params = payload["guidance_params"];
+        try {
+            float cfg_scale               = guidance_params["cfg_scale"];
+            params->lastRequest.cfg_scale = cfg_scale;
+        } catch (...) {
+        }
+        try {
+            float guidance               = guidance_params["guidance"];
+            params->lastRequest.guidance = guidance;
+        } catch (...) {
+        }
+        try {
+            json slg = guidance_params["slg"];
+            try {
+                params->lastRequest.skip_layers = slg["layers"].get<std::vector<int>>();
+            } catch (...) {
+            }
+            try {
+                float cfg_scale               = slg["scale"];
+                params->lastRequest.cfg_scale = cfg_scale;
+            } catch (...) {
+            }
+            try {
+                float skip_layer_start               = slg["start"];
+                params->lastRequest.skip_layer_start = skip_layer_start;
+            } catch (...) {
+            }
+            try {
+                float skip_layer_end               = slg["end"];
+                params->lastRequest.skip_layer_end = skip_layer_end;
+            } catch (...) {
+            }
+        } catch (...) {
+        }
+        try {
+            json apg = guidance_params["apg"];
+            try {
+                float apg_eta               = apg["eta"];
+                params->lastRequest.apg_eta = apg_eta;
+            } catch (...) {
+            }
+            try {
+                float apg_momentum               = apg["momentum"];
+                params->lastRequest.apg_momentum = apg_momentum;
+            } catch (...) {
+            }
+            try {
+                float apg_norm_threshold               = apg["norm_threshold"];
+                params->lastRequest.apg_norm_threshold = apg_norm_threshold;
+            } catch (...) {
+            }
+            try {
+                float apg_norm_smoothing               = apg["norm_smoothing"];
+                params->lastRequest.apg_norm_smoothing = apg_norm_smoothing;
+            } catch (...) {
+            }
+        } catch (...) {
+        }
     } catch (...) {
     }
     try {

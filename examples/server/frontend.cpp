@@ -1,10 +1,12 @@
 const std::string html_content = R"xxx(
 <!DOCTYPE html>
 <html>
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="shortcut icon" href="data:image/png;base64,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" />
+    <link rel="shortcut icon"
+        href="data:image/png;base64,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" />
     <title>SDCPP Server</title>
     <style>
         body {
@@ -18,6 +20,7 @@ const std::string html_content = R"xxx(
             background-color: #f0f0f0;
             color: #333;
         }
+
         .container {
             display: flex;
             flex-direction: column;
@@ -30,24 +33,30 @@ const std::string html_content = R"xxx(
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
             gap: 1rem;
         }
+
         .header {
             text-align: center;
         }
+
         .section {
             width: 100%;
         }
+
         .section h2 {
             margin-bottom: 10px;
         }
+
         .input-group {
             display: flex;
             flex-direction: column;
             margin-bottom: 10px;
         }
+
         .input-group label {
             margin-bottom: 5px;
             font-weight: bold;
         }
+
         .prompt-input,
         .param-input {
             width: 100%;
@@ -57,18 +66,22 @@ const std::string html_content = R"xxx(
             margin-bottom: 10px;
             box-sizing: border-box;
         }
+
         .line {
             display: flex;
             justify-content: space-between;
             width: 100%;
         }
+
         .line .input-group {
             width: 48%;
         }
+
         canvas {
             width: 100%;
             height: 100%;
         }
+
         .imageFrame:active {
             canvas {
                 position: absolute;
@@ -83,6 +96,7 @@ const std::string html_content = R"xxx(
                 max-height: 100vh;
                 z-index: 2;
             }
+
             &::before {
                 content: " ";
                 position: absolute;
@@ -99,10 +113,12 @@ const std::string html_content = R"xxx(
                 animation: fadeIn .3s;
             }
         }
+
         .left-section,
         .right-section {
             width: 100%;
         }
+
         .collapsible {
             background-color: #eee;
             color: #444;
@@ -116,12 +132,14 @@ const std::string html_content = R"xxx(
             border-radius: 5px;
             margin-bottom: 10px;
         }
+
         .content {
             padding: 0 18px;
             max-height: 0;
             overflow: hidden;
             transition: max-height 0.2s ease-out;
         }
+
         #model-id {
             display: inline-block;
             background: lightgray;
@@ -129,6 +147,7 @@ const std::string html_content = R"xxx(
             padding: 5px 10px;
             border-radius: 5px;
         }
+
         button {
             background-color: #4CAF50;
             color: white;
@@ -139,24 +158,30 @@ const std::string html_content = R"xxx(
             font-size: 16px;
             height: 3rem;
         }
+
         progress {
             width: 100%;
         }
+
         button:hover {
             background-color: #45a049;
         }
+
         .status {
             margin-top: 5px;
             font-size: 18px;
         }
+
         .container {
             min-height: 512px;
             height: 75%;
         }
+
         .left-section {
             overflow-y: auto;
             height: 100%;
         }
+
         .imageFrame {
             margin-top: auto;
             border: 1px solid #ccc;
@@ -165,35 +190,42 @@ const std::string html_content = R"xxx(
             max-width: 90vw;
             max-height: 90vw;
         }
+
         .right-section {
             display: flex;
             align-items: center;
             justify-content: center;
             flex-direction: column;
         }
+
         @media (min-width: 768px) {
             .container {
                 flex-direction: row;
             }
+
             .left-section,
             .right-section {
                 width: 50%;
                 height: 100%;
             }
+
             .imageFrame {
                 max-width: 45vw;
                 max-height: 45vw;
             }
         }
+
         progress {
             border: none;
             width: 100%;
             height: 8px;
             margin-inline: auto;
         }
+
         progress::-webkit-progress-value {
             background-color: blue;
         }
+
         .bars {
             margin-bottom: 10%;
             height: max-content;
@@ -206,6 +238,7 @@ const std::string html_content = R"xxx(
 </head>
 )xxx"
 R"xxx(
+
 <body>
     <div class="header">
         <h1>SDCPP Server</h1>
@@ -685,9 +718,11 @@ R"xxx(
                 negative_prompt: neg_prompt,
                 ...(width && { width: parseInt(width) }),
                 ...(height && { height: parseInt(height) }),
-                ...(cfg_scale && { cfg_scale: parseFloat(cfg_scale) }),
+                guidance_params: {
+                    ...(cfg_scale && { cfg_scale: parseFloat(cfg_scale) }),
+                    ...(guidance && { guidance: parseFloat(guidance) }),
+                },
                 ...(steps && { sample_steps: parseInt(steps) }),
-                ...(guidance && { guidance: parseFloat(guidance) }),
                 ...(sample_method && { sample_method: sample_method }),
                 ...(seed && { seed: parseInt(seed) }),
                 ...(batch_count && { batch_count: parseInt(batch_count) }),
@@ -821,5 +856,6 @@ R"xxx(
         }
     </script>
 </body>
+
 </html>
 )xxx";
