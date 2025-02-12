@@ -142,6 +142,11 @@ struct SDRequestParams {
     float skip_layer_end         = 0.2;
     bool normalize_input         = false;
 
+    float apg_eta            = 1.0f;
+    float apg_momentum       = 0.0f;
+    float apg_norm_threshold = 0.0f;
+    float apg_norm_smoothing = 0.0f;
+
     sd_preview_t preview_method = SD_PREVIEW_NONE;
     int preview_interval        = 1;
 };
@@ -742,6 +747,28 @@ std::string get_image_params(SDParams params, int64_t seed) {
     }
     parameter_string += "Steps: " + std::to_string(params.lastRequest.sample_steps) + ", ";
     parameter_string += "CFG scale: " + std::to_string(params.lastRequest.cfg_scale) + ", ";
+    if (params.lastRequest.apg_eta != 1) {
+        parameter_string += "APG eta: " + std::to_string(params.lastRequest.apg_eta) + ", ";
+    }
+    if (params.lastRequest.apg_momentum != 0) {
+        parameter_string += "CFG momentum: " + std::to_string(params.lastRequest.apg_momentum) + ", ";
+    }
+    if (params.lastRequest.apg_norm_threshold != 0) {
+        parameter_string += "CFG normalization threshold: " + std::to_string(params.lastRequest.apg_norm_threshold) + ", ";
+        if (params.lastRequest.apg_norm_smoothing != 0) {
+            parameter_string += "CFG normalization threshold: " + std::to_string(params.lastRequest.apg_norm_smoothing) + ", ";
+        }
+    }
+    if (params.lastRequest.slg_scale != 0 && params.lastRequest.skip_layers.size() != 0) {
+        parameter_string += "SLG scale: " + std::to_string(params.lastRequest.cfg_scale) + ", ";
+        parameter_string += "Skip layers: [";
+        for (const auto& layer : params.lastRequest.skip_layers) {
+            parameter_string += std::to_string(layer) + ", ";
+        }
+        parameter_string += "], ";
+        parameter_string += "Skip layer start: " + std::to_string(params.lastRequest.skip_layer_start) + ", ";
+        parameter_string += "Skip layer end: " + std::to_string(params.lastRequest.skip_layer_end) + ", ";
+    }
     parameter_string += "Guidance: " + std::to_string(params.lastRequest.guidance) + ", ";
     parameter_string += "Seed: " + std::to_string(seed) + ", ";
     parameter_string += "Size: " + std::to_string(params.lastRequest.width) + "x" + std::to_string(params.lastRequest.height) + ", ";
@@ -1151,7 +1178,7 @@ bool parseJsonPrompt(std::string json_str, SDParams* params) {
         }
     } catch (...) {
     }
-
+    //  TODO SLG and APG params
     return updatectx;
 }
 
@@ -1427,11 +1454,15 @@ void start_server(SDParams params) {
                                   params.lastRequest.style_ratio,
                                   params.lastRequest.normalize_input,
                                   params.input_id_images_path.c_str(),
-                                  params.lastRequest.skip_layers.data(),
-                                  params.lastRequest.skip_layers.size(),
-                                  params.lastRequest.slg_scale,
-                                  params.lastRequest.skip_layer_start,
-                                  params.lastRequest.skip_layer_end);
+                                  sd_slg_params_t{params.lastRequest.skip_layers.data(),
+                                                  params.lastRequest.skip_layers.size(),
+                                                  params.lastRequest.slg_scale,
+                                                  params.lastRequest.skip_layer_start,
+                                                  params.lastRequest.skip_layer_end},
+                                  sd_apg_params_t{params.lastRequest.apg_eta,
+                                                  params.lastRequest.apg_momentum,
+                                                  params.lastRequest.apg_norm_threshold,
+                                                  params.lastRequest.apg_norm_smoothing});
 
                 if (results == NULL) {
                     printf("generate failed\n");
