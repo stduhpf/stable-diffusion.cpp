@@ -1780,6 +1780,25 @@ void start_server(SDParams params) {
         res.set_redirect("/index.html");
     });
 
+    svr->Get("/dev-index", [](const httplib::Request& req, httplib::Response& res) {
+        try {
+            std::string def_frontend_path = "examples/server/frontend.html";
+            std::string html              = "";
+            std::ifstream file(def_frontend_path);
+            if (file.is_open()) {
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                html = buffer.str();
+                file.close();
+            } else {
+                html = "Error: Unable to open file " + def_frontend_path;
+            }
+            res.set_content(html, "text/html");
+        } catch (const std::exception& e) {
+            res.set_content("Error loading page", "text/plain");
+        }
+    });
+
     // bind HTTP listen port, run the HTTP server in a thread
     if (!svr->bind_to_port(params.host, params.port)) {
         // TODO: Error message
