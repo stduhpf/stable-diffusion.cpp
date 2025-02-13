@@ -887,8 +887,8 @@ bool parseJsonPrompt(std::string json_str, SDParams* params) {
             } catch (...) {
             }
             try {
-                float cfg_scale               = slg["scale"];
-                params->lastRequest.cfg_scale = cfg_scale;
+                float slg_scale               = slg["scale"];
+                params->lastRequest.slg_scale = slg_scale;
             } catch (...) {
             }
             try {
@@ -1229,7 +1229,6 @@ bool parseJsonPrompt(std::string json_str, SDParams* params) {
         }
     } catch (...) {
     }
-    //  TODO SLG and APG params
     return updatectx;
 }
 
