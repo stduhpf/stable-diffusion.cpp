@@ -806,6 +806,21 @@ public:
         sd_set_progress_callback(cb, cbd);
     }
 
+    const float (*get_latent_rgb_proj(enum SDVersion version))[3] {
+        if (sd_version_is_sd3(version)) {
+            return sd3_latent_rgb_proj;
+        } else if (sd_version_is_flux(version)) {
+            return flux_latent_rgb_proj;
+        } else if (sd_version_is_sdxl(version)) {
+            return sdxl_latent_rgb_proj;
+        } else if (sd_version_is_sd1(version) || sd_version_is_sd2(version)) {
+            return sd_latent_rgb_proj;
+        } else {
+            LOG_WARN("No latent to RGB projection known for this model");
+            return NULL;
+        }
+    }
+
     void preview_image(ggml_context* work_ctx,
                        int step,
                        struct ggml_tensor* latents,
@@ -820,33 +835,8 @@ public:
         if (preview_mode == SD_PREVIEW_PROJ) {
             const float(*latent_rgb_proj)[channel];
 
-            if (dim == 16) {
-                // 16 channels VAE -> Flux or SD3
-
-                if (sd_version_is_sd3(version)) {
-                    latent_rgb_proj = sd3_latent_rgb_proj;
-                } else if (sd_version_is_flux(version)) {
-                    latent_rgb_proj = flux_latent_rgb_proj;
-                } else {
-                    LOG_WARN("No latent to RGB projection known for this model");
-                    // unknown model
-                    return;
-                }
-
-            } else if (dim == 4) {
-                // 4 channels VAE
-                if (sd_version_is_sdxl(version)) {
-                    latent_rgb_proj = sdxl_latent_rgb_proj;
-                } else if (sd_version_is_sd1(version) || sd_version_is_sd2(version)) {
-                    latent_rgb_proj = sd_latent_rgb_proj;
-                } else {
-                    // unknown model
-                    LOG_WARN("No latent to RGB projection known for this model");
-                    return;
-                }
-            } else {
-                LOG_WARN("No latent to RGB projection known for this model");
-                // unknown latent space
+            latent_rgb_proj = get_latent_rgb_proj(version);
+            if (latent_rgb_proj == NULL) {
                 return;
             }
             uint8_t* data = (uint8_t*)malloc(width * height * channel * sizeof(uint8_t));
@@ -1237,7 +1227,56 @@ public:
                                                  decode ? (H * 8) : (H / 8),  // height
                                                  decode ? 3 : C,
                                                  x->ne[3]);  // channels
-        int64_t t0          = ggml_time_ms();
+
+        if (decode && vae_tiling) {
+            const float(*latent_rgb_proj)[3];
+            latent_rgb_proj = get_latent_rgb_proj(version);
+            if (latent_rgb_proj != NULL) {
+                uint8_t* data = (uint8_t*)malloc(W * H * 3 * sizeof(uint8_t));
+
+                preview_latent_image(data, x, latent_rgb_proj, W, H, C / 2);
+
+                // fill result with upscaled data
+                for (int w = 0; w < W; w++) {
+                    for (int h = 0; h < H; h++) {
+                        for (int c = 0; c < 3; c++) {
+                            // int i = (w * H + h) * 3 + c; //wrong
+                            int i       = (h * W + w) * 3 + c;
+                            float value = data[i] / 255.0f;
+                            if (!use_tiny_autoencoder) {
+                                value = value * 2.0f - 1.0f;
+                            }
+                            for (int x = 0; x < 8; x++) {
+                                for (int y = 0; y < 8; y++) {
+                                    ggml_tensor_set_f32(result, value, w * 8 + x, h * 8 + y, c);
+                                }
+                            }
+                        }
+                    }
+                }
+                free(data);
+                // upscale
+            }
+        }
+        auto preview_cb     = sd_get_preview_callback();
+        auto on_tile_merged = [&](ggml_tensor* output) {
+            if (preview_cb && output->ne[2] == 3) {
+                if (!use_tiny_autoencoder) {
+                    ggml_tensor_scale_output(output);
+                }
+                sd_image_t image = {
+                    output->ne[0],
+                    output->ne[1],
+                    3,
+                    sd_tensor_to_image(output)};
+                preview_cb(-1, image);
+                free(image.data);
+                if (!use_tiny_autoencoder) {
+                    ggml_tensor_scale_input(output);
+                }
+            }
+        };
+        int64_t t0 = ggml_time_ms();
         if (!use_tiny_autoencoder) {
             if (decode) {
                 ggml_tensor_scale(x, 1.0f / scale_factor);
@@ -1249,7 +1288,7 @@ public:
                 auto on_tiling = [&](ggml_tensor* in, ggml_tensor* out, bool init) {
                     first_stage_model->compute(n_threads, in, decode, &out);
                 };
-                sd_tiling(x, result, 8, 32, 0.5f, on_tiling, decode);
+                sd_tiling(x, result, 8, 32, 0.5f, on_tiling, decode, on_tile_merged);
             } else {
                 first_stage_model->compute(n_threads, x, decode, &result);
             }
@@ -1263,7 +1302,7 @@ public:
                 auto on_tiling = [&](ggml_tensor* in, ggml_tensor* out, bool init) {
                     tae_first_stage->compute(n_threads, in, decode, &out);
                 };
-                sd_tiling(x, result, 8, 64, 0.5f, on_tiling, decode);
+                sd_tiling(x, result, 8, 64, 0.5f, on_tiling, decode, on_tile_merged);
             } else {
                 tae_first_stage->compute(n_threads, x, decode, &result);
             }
