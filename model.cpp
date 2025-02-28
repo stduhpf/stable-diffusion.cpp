@@ -559,6 +559,26 @@ std::string convert_tensor_name(std::string name) {
     return new_name;
 }
 
+void add_preprocess_tensor_storage_types(std::map<std::string, enum ggml_type>& tensor_storages_types, std::string name, enum ggml_type type) {
+    std::string new_name = convert_tensor_name(name);
+
+    if (new_name.find("cond_stage_model") != std::string::npos && ends_with(new_name, "attn.in_proj_weight")) {
+        size_t prefix_size                                        = new_name.find("attn.in_proj_weight");
+        std::string prefix                                        = new_name.substr(0, prefix_size);
+        tensor_storages_types[prefix + "self_attn.q_proj.weight"] = type;
+        tensor_storages_types[prefix + "self_attn.k_proj.weight"] = type;
+        tensor_storages_types[prefix + "self_attn.v_proj.weight"] = type;
+    } else if (new_name.find("cond_stage_model") != std::string::npos && ends_with(new_name, "attn.in_proj_bias")) {
+        size_t prefix_size                                      = new_name.find("attn.in_proj_bias");
+        std::string prefix                                      = new_name.substr(0, prefix_size);
+        tensor_storages_types[prefix + "self_attn.q_proj.bias"] = type;
+        tensor_storages_types[prefix + "self_attn.k_proj.bias"] = type;
+        tensor_storages_types[prefix + "self_attn.v_proj.bias"] = type;
+    } else {
+        tensor_storages_types[new_name] = type;
+    }
+}
+
 void preprocess_tensor(TensorStorage tensor_storage,
                        std::vector<TensorStorage>& processed_tensor_storages) {
     std::vector<TensorStorage> result;
@@ -920,7 +940,7 @@ bool ModelLoader::init_from_gguf_file(const std::string& file_path, const std::s
         GGML_ASSERT(ggml_nbytes(dummy) == tensor_storage.nbytes());
 
         tensor_storages.push_back(tensor_storage);
-        tensor_storages_types[tensor_storage.name] = tensor_storage.type;
+        add_preprocess_tensor_storage_types(tensor_storages_types, tensor_storage.name, tensor_storage.type);
     }
 
     gguf_free(ctx_gguf_);
@@ -1071,7 +1091,7 @@ bool ModelLoader::init_from_safetensors_file(const std::string& file_path, const
         }
 
         tensor_storages.push_back(tensor_storage);
-        tensor_storages_types[tensor_storage.name] = tensor_storage.type;
+        add_preprocess_tensor_storage_types(tensor_storages_types, tensor_storage.name, tensor_storage.type);
 
         // LOG_DEBUG("%s %s", tensor_storage.to_string().c_str(), dtype.c_str());
     }
@@ -1402,7 +1422,7 @@ bool ModelLoader::parse_data_pkl(uint8_t* buffer,
                         // printf(" ZIP got tensor %s \n ", reader.tensor_storage.name.c_str());
                         reader.tensor_storage.name = prefix + reader.tensor_storage.name;
                         tensor_storages.push_back(reader.tensor_storage);
-                        tensor_storages_types[reader.tensor_storage.name] = reader.tensor_storage.type;
+                        add_preprocess_tensor_storage_types(tensor_storages_types, reader.tensor_storage.name, reader.tensor_storage.type);
 
                         // LOG_DEBUG("%s", reader.tensor_storage.name.c_str());
                         // reset
@@ -1634,11 +1654,20 @@ ggml_type ModelLoader::get_vae_wtype() {
 void ModelLoader::set_wtype_override(ggml_type wtype, std::string prefix) {
     for (auto& pair : tensor_storages_types) {
         if (prefix.size() < 1 || pair.first.substr(0, prefix.size()) == prefix) {
+            bool found = false;
             for (auto& tensor_storage : tensor_storages) {
-                if (tensor_storage.name == pair.first) {
-                    if (tensor_should_be_converted(tensor_storage, wtype)) {
-                        pair.second = wtype;
+                std::map<std::string, ggml_type> temp;
+                add_preprocess_tensor_storage_types(temp, tensor_storage.name, tensor_storage.type);
+                for (auto& preprocessed_name : temp) {
+                    if (preprocessed_name.first == pair.first) {
+                        if (tensor_should_be_converted(tensor_storage, wtype)) {
+                            pair.second = wtype;
+                        }
+                        found = true;
+                        break;
                     }
+                }
+                if (found) {
                     break;
                 }
             }
