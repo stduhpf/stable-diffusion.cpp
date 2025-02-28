@@ -1265,8 +1265,8 @@ public:
                     ggml_tensor_scale_output(output);
                 }
                 sd_image_t image = {
-                    output->ne[0],
-                    output->ne[1],
+                    (uint32_t)output->ne[0],
+                    (uint32_t)output->ne[1],
                     3,
                     sd_tensor_to_image(output)};
                 preview_cb(-1, image);
