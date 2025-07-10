@@ -443,7 +443,7 @@ R"xxx(
         }
         const modelIdElement = document.getElementById('model-id');
         async function fetchModelId() {
-            const response = await fetch('/model');
+            const response = await fetch('model');
             const data = await response.json();
             let modelIdText = '';
             if (data.model) {
@@ -477,7 +477,7 @@ R"xxx(
             modelIdElement.textContent = modelIdText;
         }
         async function fetchSampleMethods() {
-            const response = await fetch('/sample_methods');
+            const response = await fetch('sample_methods');
             const data = await response.json();
             const select = document.getElementById('sample_method');
             data.forEach(method => {
@@ -488,7 +488,7 @@ R"xxx(
             });
         }
         async function fetchSchedules() {
-            const response = await fetch('/schedules');
+            const response = await fetch('schedules');
             const data = await response.json();
             const select = document.getElementById('schedule_method');
             data.forEach(schedule => {
@@ -499,7 +499,7 @@ R"xxx(
             });
         }
         async function fetchPreviewMethods() {
-            const response = await fetch('/previews');
+            const response = await fetch('previews');
             const data = await response.json();
             const select = document.getElementById('preview_mode');
             if (data) {
@@ -513,7 +513,7 @@ R"xxx(
             }
         }
         async function fetchTypes() {
-            const response = await fetch('/types');
+            const response = await fetch('types');
             const data = await response.json();
             const select = document.getElementById('type');
             if (data) {
@@ -526,7 +526,7 @@ R"xxx(
             }
         }
         async function fetchModels() {
-            const response = await fetch('/models');
+            const response = await fetch('models');
             const data = await response.json();
             const modelsSelect = document.getElementById('model');
             if (data.models.length > 0) {
@@ -650,7 +650,7 @@ R"xxx(
             }
         }
         async function fetchParams() {
-            const response = await fetch('/params');
+            const response = await fetch('params');
             const data = await response.json();
             document.getElementById('prompt').value = data.generation_params.prompt;
             document.getElementById('neg_prompt').value = data.generation_params.negative_prompt;
@@ -742,7 +742,7 @@ R"xxx(
                 ...(preview_interval && { preview_interval: parseInt(preview_interval) }),
                 ... (type && { type: type }),
             };
-            const response = await fetch('/txt2img', {
+            const response = await fetch('txt2img', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -753,7 +753,7 @@ R"xxx(
             const taskId = data.task_id;
             let status = 'Pending';
             while (status !== 'Done' && status !== 'Failed') {
-                const statusResponse = await fetch(`/result?task_id=${taskId}`);
+                const statusResponse = await fetch(`result?task_id=${taskId}`);
                 const statusData = await statusResponse.json();
                 if (status == 'Pending' && statusData.status != status) {
                     setTimeout(() => {
