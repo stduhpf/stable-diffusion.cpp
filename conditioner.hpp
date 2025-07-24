@@ -43,73 +43,71 @@ struct Conditioner {
 // ldm.modules.encoders.modules.FrozenCLIPEmbedder
 // Ref: https://github.com/AUTOMATIC1111/stable-diffusion-webui/blob/cad87bf4e3e0b0a759afa94e933527c3123d59bc/modules/sd_hijack_clip.py#L283
 struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
-    SDVersion version    = VERSION_SD1;
-    PMVersion pm_version = PM_VERSION_1;
+    SDVersion version = VERSION_SD1;
     CLIPTokenizer tokenizer;
+    ggml_type wtype;
     std::shared_ptr<CLIPTextModelRunner> text_model;
     std::shared_ptr<CLIPTextModelRunner> text_model2;
 
     std::string trigger_word = "img";  // should be user settable
     std::string embd_dir;
-    int32_t num_custom_embeddings   = 0;
-    int32_t num_custom_embeddings_2 = 0;
+    int32_t num_custom_embeddings = 0;
     std::vector<uint8_t> token_embed_custom;
     std::vector<std::string> readed_embeddings;
 
     FrozenCLIPEmbedderWithCustomWords(ggml_backend_t backend,
-                                      std::map<std::string, enum ggml_type>& tensor_types,
+                                      ggml_type wtype,
                                       const std::string& embd_dir,
                                       SDVersion version = VERSION_SD1,
-                                      PMVersion pv      = PM_VERSION_1,
                                       int clip_skip     = -1)
-        : version(version), pm_version(pv), tokenizer(sd_version_is_sd2(version) ? 0 : 49407), embd_dir(embd_dir) {
+        : version(version), tokenizer(version == VERSION_SD2 ? 0 : 49407), embd_dir(embd_dir), wtype(wtype) {
         if (clip_skip <= 0) {
             clip_skip = 1;
-            if (sd_version_is_sd2(version) || sd_version_is_sdxl(version)) {
+            if (version == VERSION_SD2 || version == VERSION_SDXL) {
                 clip_skip = 2;
             }
         }
-        if (sd_version_is_sd1(version)) {
-            text_model = std::make_shared<CLIPTextModelRunner>(backend, tensor_types, "cond_stage_model.transformer.text_model", OPENAI_CLIP_VIT_L_14, clip_skip);
-        } else if (sd_version_is_sd2(version)) {
-            text_model = std::make_shared<CLIPTextModelRunner>(backend, tensor_types, "cond_stage_model.transformer.text_model", OPEN_CLIP_VIT_H_14, clip_skip);
-        } else if (sd_version_is_sdxl(version)) {
-            text_model  = std::make_shared<CLIPTextModelRunner>(backend, tensor_types, "cond_stage_model.transformer.text_model", OPENAI_CLIP_VIT_L_14, clip_skip, false);
-            text_model2 = std::make_shared<CLIPTextModelRunner>(backend, tensor_types, "cond_stage_model.1.transformer.text_model", OPEN_CLIP_VIT_BIGG_14, clip_skip, false);
+        if (version == VERSION_SD1) {
+            text_model = std::make_shared<CLIPTextModelRunner>(backend, wtype, OPENAI_CLIP_VIT_L_14, clip_skip);
+        } else if (version == VERSION_SD2) {
+            text_model = std::make_shared<CLIPTextModelRunner>(backend, wtype, OPEN_CLIP_VIT_H_14, clip_skip);
+        } else if (version == VERSION_SDXL) {
+            text_model  = std::make_shared<CLIPTextModelRunner>(backend, wtype, OPENAI_CLIP_VIT_L_14, clip_skip, false);
+            text_model2 = std::make_shared<CLIPTextModelRunner>(backend, wtype, OPEN_CLIP_VIT_BIGG_14, clip_skip, false);
         }
     }
 
     void set_clip_skip(int clip_skip) {
         text_model->set_clip_skip(clip_skip);
-        if (sd_version_is_sdxl(version)) {
+        if (version == VERSION_SDXL) {
             text_model2->set_clip_skip(clip_skip);
         }
     }
 
     void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) {
         text_model->get_param_tensors(tensors, "cond_stage_model.transformer.text_model");
-        if (sd_version_is_sdxl(version)) {
+        if (version == VERSION_SDXL) {
             text_model2->get_param_tensors(tensors, "cond_stage_model.1.transformer.text_model");
         }
     }
 
     void alloc_params_buffer() {
         text_model->alloc_params_buffer();
-        if (sd_version_is_sdxl(version)) {
+        if (version == VERSION_SDXL) {
             text_model2->alloc_params_buffer();
         }
     }
 
     void free_params_buffer() {
         text_model->free_params_buffer();
-        if (sd_version_is_sdxl(version)) {
+        if (version == VERSION_SDXL) {
             text_model2->free_params_buffer();
         }
     }
 
     size_t get_params_buffer_size() {
         size_t buffer_size = text_model->get_params_buffer_size();
-        if (sd_version_is_sdxl(version)) {
+        if (version == VERSION_SDXL) {
             buffer_size += text_model2->get_params_buffer_size();
         }
         return buffer_size;
@@ -132,55 +130,28 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
         params.no_alloc               = false;
         struct ggml_context* embd_ctx = ggml_init(params);
         struct ggml_tensor* embd      = NULL;
-        struct ggml_tensor* embd2     = NULL;
+        int64_t hidden_size           = text_model->model.hidden_size;
         auto on_load                  = [&](const TensorStorage& tensor_storage, ggml_tensor** dst_tensor) {
-            if (tensor_storage.ne[0] != text_model->model.hidden_size) {
-                if (text_model2) {
-                    if (tensor_storage.ne[0] == text_model2->model.hidden_size) {
-                        embd2       = ggml_new_tensor_2d(embd_ctx, tensor_storage.type, text_model2->model.hidden_size, tensor_storage.n_dims > 1 ? tensor_storage.ne[1] : 1);
-                        *dst_tensor = embd2;
-                    } else {
-                        LOG_DEBUG("embedding wrong hidden size, got %i, expected %i or %i", tensor_storage.ne[0], text_model->model.hidden_size, text_model2->model.hidden_size);
-                        return false;
-                    }
-                } else {
-                    LOG_DEBUG("embedding wrong hidden size, got %i, expected %i", tensor_storage.ne[0], text_model->model.hidden_size);
-                    return false;
-                }
-            } else {
-                embd        = ggml_new_tensor_2d(embd_ctx, tensor_storage.type, text_model->model.hidden_size, tensor_storage.n_dims > 1 ? tensor_storage.ne[1] : 1);
-                *dst_tensor = embd;
+            if (tensor_storage.ne[0] != hidden_size) {
+                LOG_DEBUG("embedding wrong hidden size, got %i, expected %i", tensor_storage.ne[0], hidden_size);
+                return false;
             }
+            embd        = ggml_new_tensor_2d(embd_ctx, wtype, hidden_size, tensor_storage.n_dims > 1 ? tensor_storage.ne[1] : 1);
+            *dst_tensor = embd;
             return true;
         };
         model_loader.load_tensors(on_load, NULL);
         readed_embeddings.push_back(embd_name);
-        if (embd) {
-            int64_t hidden_size = text_model->model.hidden_size;
-            token_embed_custom.resize(token_embed_custom.size() + ggml_nbytes(embd));
-            memcpy((void*)(token_embed_custom.data() + num_custom_embeddings * hidden_size * ggml_type_size(embd->type)),
-                   embd->data,
-                   ggml_nbytes(embd));
-            for (int i = 0; i < embd->ne[1]; i++) {
-                bpe_tokens.push_back(text_model->model.vocab_size + num_custom_embeddings);
-                // LOG_DEBUG("new custom token: %i", text_model.vocab_size + num_custom_embeddings);
-                num_custom_embeddings++;
-            }
-            LOG_DEBUG("embedding '%s' applied, custom embeddings: %i", embd_name.c_str(), num_custom_embeddings);
+        token_embed_custom.resize(token_embed_custom.size() + ggml_nbytes(embd));
+        memcpy((void*)(token_embed_custom.data() + num_custom_embeddings * hidden_size * ggml_type_size(wtype)),
+               embd->data,
+               ggml_nbytes(embd));
+        for (int i = 0; i < embd->ne[1]; i++) {
+            bpe_tokens.push_back(text_model->model.vocab_size + num_custom_embeddings);
+            // LOG_DEBUG("new custom token: %i", text_model.vocab_size + num_custom_embeddings);
+            num_custom_embeddings++;
         }
-        if (embd2) {
-            int64_t hidden_size = text_model2->model.hidden_size;
-            token_embed_custom.resize(token_embed_custom.size() + ggml_nbytes(embd2));
-            memcpy((void*)(token_embed_custom.data() + num_custom_embeddings_2 * hidden_size * ggml_type_size(embd2->type)),
-                   embd2->data,
-                   ggml_nbytes(embd2));
-            for (int i = 0; i < embd2->ne[1]; i++) {
-                bpe_tokens.push_back(text_model2->model.vocab_size + num_custom_embeddings_2);
-                // LOG_DEBUG("new custom token: %i", text_model.vocab_size + num_custom_embeddings);
-                num_custom_embeddings_2++;
-            }
-            LOG_DEBUG("embedding '%s' applied, custom embeddings: %i (text model 2)", embd_name.c_str(), num_custom_embeddings_2);
-        }
+        LOG_DEBUG("embedding '%s' applied, custom embeddings: %i", embd_name.c_str(), num_custom_embeddings);
         return true;
     }
 
@@ -297,7 +268,7 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
                 std::vector<int> clean_input_ids_tmp;
                 for (uint32_t i = 0; i < class_token_index[0]; i++)
                     clean_input_ids_tmp.push_back(clean_input_ids[i]);
-                for (uint32_t i = 0; i < (pm_version == PM_VERSION_2 ? 2 * num_input_imgs : num_input_imgs); i++)
+                for (uint32_t i = 0; i < num_input_imgs; i++)
                     clean_input_ids_tmp.push_back(class_token);
                 for (uint32_t i = class_token_index[0] + 1; i < clean_input_ids.size(); i++)
                     clean_input_ids_tmp.push_back(clean_input_ids[i]);
@@ -308,16 +279,13 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
             tokens.insert(tokens.end(), clean_input_ids.begin(), clean_input_ids.end());
             weights.insert(weights.end(), clean_input_ids.size(), curr_weight);
         }
-        // BUG!! double couting, pad_tokens will add BOS at the beginning
-        // tokens.insert(tokens.begin(), tokenizer.BOS_TOKEN_ID);
-        // weights.insert(weights.begin(), 1.0);
+        tokens.insert(tokens.begin(), tokenizer.BOS_TOKEN_ID);
+        weights.insert(weights.begin(), 1.0);
 
         tokenizer.pad_tokens(tokens, weights, max_length, padding);
-        int offset = pm_version == PM_VERSION_2 ? 2 * num_input_imgs : num_input_imgs;
+
         for (uint32_t i = 0; i < tokens.size(); i++) {
-            // if (class_idx + 1 <= i && i < class_idx + 1 + 2*num_input_imgs) // photomaker V2 has num_tokens(=2)*num_input_imgs
-            if (class_idx + 1 <= i && i < class_idx + 1 + offset)  // photomaker V2 has num_tokens(=2)*num_input_imgs
-                                                                   // hardcode for now
+            if (class_idx + 1 <= i && i < class_idx + 1 + num_input_imgs)
                 class_token_mask.push_back(true);
             else
                 class_token_mask.push_back(false);
@@ -430,7 +398,7 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
             auto input_ids                 = vector_to_ggml_tensor_i32(work_ctx, chunk_tokens);
             struct ggml_tensor* input_ids2 = NULL;
             size_t max_token_idx           = 0;
-            if (sd_version_is_sdxl(version)) {
+            if (version == VERSION_SDXL) {
                 auto it = std::find(chunk_tokens.begin(), chunk_tokens.end(), tokenizer.EOS_TOKEN_ID);
                 if (it != chunk_tokens.end()) {
                     std::fill(std::next(it), chunk_tokens.end(), 0);
@@ -455,11 +423,11 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
                                     false,
                                     &chunk_hidden_states1,
                                     work_ctx);
-                if (sd_version_is_sdxl(version)) {
+                if (version == VERSION_SDXL) {
                     text_model2->compute(n_threads,
                                          input_ids2,
-                                         num_custom_embeddings,
-                                         token_embed_custom.data(),
+                                         0,
+                                         NULL,
                                          max_token_idx,
                                          false,
                                          &chunk_hidden_states2, work_ctx);
@@ -469,8 +437,8 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
                     if (chunk_idx == 0) {
                         text_model2->compute(n_threads,
                                              input_ids2,
-                                             num_custom_embeddings,
-                                             token_embed_custom.data(),
+                                             0,
+                                             NULL,
                                              max_token_idx,
                                              true,
                                              &pooled,
@@ -514,7 +482,7 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
                                         ggml_nelements(hidden_states) / chunk_hidden_states->ne[0]);
 
         ggml_tensor* vec = NULL;
-        if (sd_version_is_sdxl(version)) {
+        if (version == VERSION_SDXL) {
             int out_dim = 256;
             vec         = ggml_new_tensor_1d(work_ctx, GGML_TYPE_F32, adm_in_channels);
             // [0:1280]
@@ -617,9 +585,9 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
 struct FrozenCLIPVisionEmbedder : public GGMLRunner {
     CLIPVisionModelProjection vision_model;
 
-    FrozenCLIPVisionEmbedder(ggml_backend_t backend, std::map<std::string, enum ggml_type>& tensor_types)
-        : vision_model(OPEN_CLIP_VIT_H_14, true), GGMLRunner(backend) {
-        vision_model.init(params_ctx, tensor_types, "cond_stage_model.transformer");
+    FrozenCLIPVisionEmbedder(ggml_backend_t backend, ggml_type wtype)
+        : vision_model(OPEN_CLIP_VIT_H_14, true), GGMLRunner(backend, wtype) {
+        vision_model.init(params_ctx, wtype);
     }
 
     std::string get_desc() {
@@ -642,122 +610,65 @@ struct FrozenCLIPVisionEmbedder : public GGMLRunner {
         return gf;
     }
 
-    bool compute(const int n_threads,
+    void compute(const int n_threads,
                  ggml_tensor* pixel_values,
                  ggml_tensor** output,
                  ggml_context* output_ctx) {
         auto get_graph = [&]() -> struct ggml_cgraph* {
             return build_graph(pixel_values);
         };
-        return GGMLRunner::compute(get_graph, n_threads, true, output, output_ctx);
+        GGMLRunner::compute(get_graph, n_threads, true, output, output_ctx);
     }
 };
 
 struct SD3CLIPEmbedder : public Conditioner {
+    ggml_type wtype;
     CLIPTokenizer clip_l_tokenizer;
     CLIPTokenizer clip_g_tokenizer;
     T5UniGramTokenizer t5_tokenizer;
     std::shared_ptr<CLIPTextModelRunner> clip_l;
     std::shared_ptr<CLIPTextModelRunner> clip_g;
     std::shared_ptr<T5Runner> t5;
-    bool use_clip_l = false;
-    bool use_clip_g = false;
-    bool use_t5     = false;
 
     SD3CLIPEmbedder(ggml_backend_t backend,
-                    std::map<std::string, enum ggml_type>& tensor_types,
+                    ggml_type wtype,
                     int clip_skip = -1)
-        : clip_g_tokenizer(0) {
+        : wtype(wtype), clip_g_tokenizer(0) {
         if (clip_skip <= 0) {
             clip_skip = 2;
         }
-
-        for (auto pair : tensor_types) {
-            if (pair.first.find("text_encoders.clip_l") != std::string::npos) {
-                use_clip_l = true;
-            } else if (pair.first.find("text_encoders.clip_g") != std::string::npos) {
-                use_clip_g = true;
-            } else if (pair.first.find("text_encoders.t5xxl") != std::string::npos) {
-                use_t5 = true;
-            }
-        }
-        if (!use_clip_l && !use_clip_g && !use_t5) {
-            LOG_WARN("IMPORTANT NOTICE: No text encoders provided, cannot process prompts!");
-            return;
-        }
-        if (use_clip_l) {
-            clip_l = std::make_shared<CLIPTextModelRunner>(backend, tensor_types, "text_encoders.clip_l.transformer.text_model", OPENAI_CLIP_VIT_L_14, clip_skip, false);
-        } else {
-            LOG_WARN("clip_l text encoder not found! Prompt adherence might be degraded.");
-        }
-        if (use_clip_g) {
-            clip_g = std::make_shared<CLIPTextModelRunner>(backend, tensor_types, "text_encoders.clip_g.transformer.text_model", OPEN_CLIP_VIT_BIGG_14, clip_skip, false);
-        } else {
-            LOG_WARN("clip_g text encoder not found! Prompt adherence might be degraded.");
-        }
-        if (use_t5) {
-            t5 = std::make_shared<T5Runner>(backend, tensor_types, "text_encoders.t5xxl.transformer");
-        } else {
-            LOG_WARN("t5xxl text encoder not found! Prompt adherence might be degraded.");
-        }
+        clip_l = std::make_shared<CLIPTextModelRunner>(backend, wtype, OPENAI_CLIP_VIT_L_14, clip_skip, false);
+        clip_g = std::make_shared<CLIPTextModelRunner>(backend, wtype, OPEN_CLIP_VIT_BIGG_14, clip_skip, false);
+        t5     = std::make_shared<T5Runner>(backend, wtype);
     }
 
     void set_clip_skip(int clip_skip) {
-        if (use_clip_l) {
-            clip_l->set_clip_skip(clip_skip);
-        }
-        if (use_clip_g) {
-            clip_g->set_clip_skip(clip_skip);
-        }
+        clip_l->set_clip_skip(clip_skip);
+        clip_g->set_clip_skip(clip_skip);
     }
 
     void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) {
-        if (use_clip_l) {
-            clip_l->get_param_tensors(tensors, "text_encoders.clip_l.transformer.text_model");
-        }
-        if (use_clip_g) {
-            clip_g->get_param_tensors(tensors, "text_encoders.clip_g.transformer.text_model");
-        }
-        if (use_t5) {
-            t5->get_param_tensors(tensors, "text_encoders.t5xxl.transformer");
-        }
+        clip_l->get_param_tensors(tensors, "text_encoders.clip_l.transformer.text_model");
+        clip_g->get_param_tensors(tensors, "text_encoders.clip_g.transformer.text_model");
+        t5->get_param_tensors(tensors, "text_encoders.t5xxl.transformer");
     }
 
     void alloc_params_buffer() {
-        if (use_clip_l) {
-            clip_l->alloc_params_buffer();
-        }
-        if (use_clip_g) {
-            clip_g->alloc_params_buffer();
-        }
-        if (use_t5) {
-            t5->alloc_params_buffer();
-        }
+        clip_l->alloc_params_buffer();
+        clip_g->alloc_params_buffer();
+        t5->alloc_params_buffer();
     }
 
     void free_params_buffer() {
-        if (use_clip_l) {
-            clip_l->free_params_buffer();
-        }
-        if (use_clip_g) {
-            clip_g->free_params_buffer();
-        }
-        if (use_t5) {
-            t5->free_params_buffer();
-        }
+        clip_l->free_params_buffer();
+        clip_g->free_params_buffer();
+        t5->free_params_buffer();
     }
 
     size_t get_params_buffer_size() {
-        size_t buffer_size = 0;
-        if (use_clip_l) {
-            buffer_size += clip_l->get_params_buffer_size();
-        }
-        if (use_clip_g) {
-            buffer_size += clip_g->get_params_buffer_size();
-        }
-        if (use_t5) {
-            buffer_size += t5->get_params_buffer_size();
-        }
+        size_t buffer_size = clip_l->get_params_buffer_size();
+        buffer_size += clip_g->get_params_buffer_size();
+        buffer_size += t5->get_params_buffer_size();
         return buffer_size;
     }
 
@@ -789,32 +700,23 @@ struct SD3CLIPEmbedder : public Conditioner {
         for (const auto& item : parsed_attention) {
             const std::string& curr_text = item.first;
             float curr_weight            = item.second;
-            if (use_clip_l) {
-                std::vector<int> curr_tokens = clip_l_tokenizer.encode(curr_text, on_new_token_cb);
-                clip_l_tokens.insert(clip_l_tokens.end(), curr_tokens.begin(), curr_tokens.end());
-                clip_l_weights.insert(clip_l_weights.end(), curr_tokens.size(), curr_weight);
-            }
-            if (use_clip_g) {
-                std::vector<int> curr_tokens = clip_g_tokenizer.encode(curr_text, on_new_token_cb);
-                clip_g_tokens.insert(clip_g_tokens.end(), curr_tokens.begin(), curr_tokens.end());
-                clip_g_weights.insert(clip_g_weights.end(), curr_tokens.size(), curr_weight);
-            }
-            if (use_t5) {
-                std::vector<int> curr_tokens = t5_tokenizer.Encode(curr_text, true);
-                t5_tokens.insert(t5_tokens.end(), curr_tokens.begin(), curr_tokens.end());
-                t5_weights.insert(t5_weights.end(), curr_tokens.size(), curr_weight);
-            }
+
+            std::vector<int> curr_tokens = clip_l_tokenizer.encode(curr_text, on_new_token_cb);
+            clip_l_tokens.insert(clip_l_tokens.end(), curr_tokens.begin(), curr_tokens.end());
+            clip_l_weights.insert(clip_l_weights.end(), curr_tokens.size(), curr_weight);
+
+            curr_tokens = clip_g_tokenizer.encode(curr_text, on_new_token_cb);
+            clip_g_tokens.insert(clip_g_tokens.end(), curr_tokens.begin(), curr_tokens.end());
+            clip_g_weights.insert(clip_g_weights.end(), curr_tokens.size(), curr_weight);
+
+            curr_tokens = t5_tokenizer.Encode(curr_text, true);
+            t5_tokens.insert(t5_tokens.end(), curr_tokens.begin(), curr_tokens.end());
+            t5_weights.insert(t5_weights.end(), curr_tokens.size(), curr_weight);
         }
 
-        if (use_clip_l) {
-            clip_l_tokenizer.pad_tokens(clip_l_tokens, clip_l_weights, max_length, padding);
-        }
-        if (use_clip_g) {
-            clip_g_tokenizer.pad_tokens(clip_g_tokens, clip_g_weights, max_length, padding);
-        }
-        if (use_t5) {
-            t5_tokenizer.pad_tokens(t5_tokens, t5_weights, NULL, max_length, padding);
-        }
+        clip_l_tokenizer.pad_tokens(clip_l_tokens, clip_l_weights, max_length, padding);
+        clip_g_tokenizer.pad_tokens(clip_g_tokens, clip_g_weights, max_length, padding);
+        t5_tokenizer.pad_tokens(t5_tokens, t5_weights, max_length, padding);
 
         // for (int i = 0; i < clip_l_tokens.size(); i++) {
         //     std::cout << clip_l_tokens[i] << ":" << clip_l_weights[i] << ", ";
@@ -859,10 +761,10 @@ struct SD3CLIPEmbedder : public Conditioner {
         std::vector<float> hidden_states_vec;
 
         size_t chunk_len   = 77;
-        size_t chunk_count = std::max(std::max(clip_l_tokens.size(), clip_g_tokens.size()), t5_tokens.size()) / chunk_len;
+        size_t chunk_count = clip_l_tokens.size() / chunk_len;
         for (int chunk_idx = 0; chunk_idx < chunk_count; chunk_idx++) {
             // clip_l
-            if (use_clip_l) {
+            {
                 std::vector<int> chunk_tokens(clip_l_tokens.begin() + chunk_idx * chunk_len,
                                               clip_l_tokens.begin() + (chunk_idx + 1) * chunk_len);
                 std::vector<float> chunk_weights(clip_l_weights.begin() + chunk_idx * chunk_len,
@@ -906,11 +808,12 @@ struct SD3CLIPEmbedder : public Conditioner {
                                     true,
                                     &pooled_l,
                                     work_ctx);
+
                 }
             }
 
             // clip_g
-            if (use_clip_g) {
+            {
                 std::vector<int> chunk_tokens(clip_g_tokens.begin() + chunk_idx * chunk_len,
                                               clip_g_tokens.begin() + (chunk_idx + 1) * chunk_len);
                 std::vector<float> chunk_weights(clip_g_weights.begin() + chunk_idx * chunk_len,
@@ -955,11 +858,12 @@ struct SD3CLIPEmbedder : public Conditioner {
                                     true,
                                     &pooled_g,
                                     work_ctx);
+
                 }
             }
 
             // t5
-            if (use_t5) {
+            {
                 std::vector<int> chunk_tokens(t5_tokens.begin() + chunk_idx * chunk_len,
                                               t5_tokens.begin() + (chunk_idx + 1) * chunk_len);
                 std::vector<float> chunk_weights(t5_weights.begin() + chunk_idx * chunk_len,
@@ -986,8 +890,6 @@ struct SD3CLIPEmbedder : public Conditioner {
                     float new_mean = ggml_tensor_mean(tensor);
                     ggml_tensor_scale(tensor, (original_mean / new_mean));
                 }
-            } else {
-                chunk_hidden_states_t5 = ggml_new_tensor_2d(work_ctx, GGML_TYPE_F32, 4096, 0);
             }
 
             auto chunk_hidden_states_lg_pad = ggml_new_tensor_3d(work_ctx,
@@ -1030,19 +932,11 @@ struct SD3CLIPEmbedder : public Conditioner {
                                      ((float*)chunk_hidden_states->data) + ggml_nelements(chunk_hidden_states));
         }
 
-        if (hidden_states_vec.size() > 0) {
-            hidden_states = vector_to_ggml_tensor(work_ctx, hidden_states_vec);
-            hidden_states = ggml_reshape_2d(work_ctx,
-                                            hidden_states,
-                                            chunk_hidden_states->ne[0],
-                                            ggml_nelements(hidden_states) / chunk_hidden_states->ne[0]);
-        } else {
-            hidden_states = ggml_new_tensor_2d(work_ctx, GGML_TYPE_F32, 4096, 0);
-        }
-        if (pooled == NULL) {
-            pooled = ggml_new_tensor_1d(work_ctx, GGML_TYPE_F32, 2048);
-            ggml_set_f32(pooled, 0.f);
-        }
+        hidden_states = vector_to_ggml_tensor(work_ctx, hidden_states_vec);
+        hidden_states = ggml_reshape_2d(work_ctx,
+                                        hidden_states,
+                                        chunk_hidden_states->ne[0],
+                                        ggml_nelements(hidden_states) / chunk_hidden_states->ne[0]);
         return SDCondition(hidden_states, pooled, NULL);
     }
 
@@ -1077,88 +971,45 @@ struct SD3CLIPEmbedder : public Conditioner {
 };
 
 struct FluxCLIPEmbedder : public Conditioner {
+    ggml_type wtype;
     CLIPTokenizer clip_l_tokenizer;
     T5UniGramTokenizer t5_tokenizer;
     std::shared_ptr<CLIPTextModelRunner> clip_l;
     std::shared_ptr<T5Runner> t5;
-    size_t chunk_len = 256;
-
-    bool use_clip_l = false;
-    bool use_t5     = false;
 
     FluxCLIPEmbedder(ggml_backend_t backend,
-                     std::map<std::string, enum ggml_type>& tensor_types,
-                     int clip_skip = -1) {
+                     ggml_type wtype,
+                     int clip_skip = -1)
+        : wtype(wtype) {
         if (clip_skip <= 0) {
             clip_skip = 2;
         }
-
-        for (auto pair : tensor_types) {
-            if (pair.first.find("text_encoders.clip_l") != std::string::npos) {
-                use_clip_l = true;
-            } else if (pair.first.find("text_encoders.t5xxl") != std::string::npos) {
-                use_t5 = true;
-            }
-        }
-
-        if (!use_clip_l && !use_t5) {
-            LOG_WARN("IMPORTANT NOTICE: No text encoders provided, cannot process prompts!");
-            return;
-        }
-
-        if (use_clip_l) {
-            clip_l = std::make_shared<CLIPTextModelRunner>(backend, tensor_types, "text_encoders.clip_l.transformer.text_model", OPENAI_CLIP_VIT_L_14, clip_skip, true);
-        } else {
-            LOG_WARN("clip_l text encoder not found! Prompt adherence might be degraded.");
-        }
-        if (use_t5) {
-            t5 = std::make_shared<T5Runner>(backend, tensor_types, "text_encoders.t5xxl.transformer");
-        } else {
-            LOG_WARN("t5xxl text encoder not found! Prompt adherence might be degraded.");
-        }
+        clip_l = std::make_shared<CLIPTextModelRunner>(backend, wtype, OPENAI_CLIP_VIT_L_14, clip_skip, true);
+        t5     = std::make_shared<T5Runner>(backend, wtype);
     }
 
     void set_clip_skip(int clip_skip) {
-        if (use_clip_l) {
-            clip_l->set_clip_skip(clip_skip);
-        }
+        clip_l->set_clip_skip(clip_skip);
     }
 
     void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) {
-        if (use_clip_l) {
-            clip_l->get_param_tensors(tensors, "text_encoders.clip_l.transformer.text_model");
-        }
-        if (use_t5) {
-            t5->get_param_tensors(tensors, "text_encoders.t5xxl.transformer");
-        }
+        clip_l->get_param_tensors(tensors, "text_encoders.clip_l.transformer.text_model");
+        t5->get_param_tensors(tensors, "text_encoders.t5xxl.transformer");
     }
 
     void alloc_params_buffer() {
-        if (use_clip_l) {
-            clip_l->alloc_params_buffer();
-        }
-        if (use_t5) {
-            t5->alloc_params_buffer();
-        }
+        clip_l->alloc_params_buffer();
+        t5->alloc_params_buffer();
     }
 
     void free_params_buffer() {
-        if (use_clip_l) {
-            clip_l->free_params_buffer();
-        }
-        if (use_t5) {
-            t5->free_params_buffer();
-        }
+        clip_l->free_params_buffer();
+        t5->free_params_buffer();
     }
 
     size_t get_params_buffer_size() {
-        size_t buffer_size = 0;
-        if (use_clip_l) {
-            buffer_size += clip_l->get_params_buffer_size();
-        }
-        if (use_t5) {
-            buffer_size += t5->get_params_buffer_size();
-        }
+        size_t buffer_size = clip_l->get_params_buffer_size();
+        buffer_size += t5->get_params_buffer_size();
         return buffer_size;
     }
 
@@ -1188,23 +1039,18 @@ struct FluxCLIPEmbedder : public Conditioner {
         for (const auto& item : parsed_attention) {
             const std::string& curr_text = item.first;
             float curr_weight            = item.second;
-            if (use_clip_l) {
-                std::vector<int> curr_tokens = clip_l_tokenizer.encode(curr_text, on_new_token_cb);
-                clip_l_tokens.insert(clip_l_tokens.end(), curr_tokens.begin(), curr_tokens.end());
-                clip_l_weights.insert(clip_l_weights.end(), curr_tokens.size(), curr_weight);
-            }
-            if (use_t5) {
-                std::vector<int> curr_tokens = t5_tokenizer.Encode(curr_text, true);
-                t5_tokens.insert(t5_tokens.end(), curr_tokens.begin(), curr_tokens.end());
-                t5_weights.insert(t5_weights.end(), curr_tokens.size(), curr_weight);
-            }
+
+            std::vector<int> curr_tokens = clip_l_tokenizer.encode(curr_text, on_new_token_cb);
+            clip_l_tokens.insert(clip_l_tokens.end(), curr_tokens.begin(), curr_tokens.end());
+            clip_l_weights.insert(clip_l_weights.end(), curr_tokens.size(), curr_weight);
+
+            curr_tokens = t5_tokenizer.Encode(curr_text, true);
+            t5_tokens.insert(t5_tokens.end(), curr_tokens.begin(), curr_tokens.end());
+            t5_weights.insert(t5_weights.end(), curr_tokens.size(), curr_weight);
         }
-        if (use_clip_l) {
-            clip_l_tokenizer.pad_tokens(clip_l_tokens, clip_l_weights, 77, padding);
-        }
-        if (use_t5) {
-            t5_tokenizer.pad_tokens(t5_tokens, t5_weights, NULL, max_length, padding);
-        }
+
+        clip_l_tokenizer.pad_tokens(clip_l_tokens, clip_l_weights, 77, padding);
+        t5_tokenizer.pad_tokens(t5_tokens, t5_weights, max_length, padding);
 
         // for (int i = 0; i < clip_l_tokens.size(); i++) {
         //     std::cout << clip_l_tokens[i] << ":" << clip_l_weights[i] << ", ";
@@ -1236,19 +1082,19 @@ struct FluxCLIPEmbedder : public Conditioner {
         struct ggml_tensor* pooled              = NULL;  // [768,]
         std::vector<float> hidden_states_vec;
 
-        size_t chunk_count = std::max(clip_l_tokens.size() > 0 ? chunk_len : 0, t5_tokens.size()) / chunk_len;
+        size_t chunk_len   = 256;
+        size_t chunk_count = t5_tokens.size() / chunk_len;
         for (int chunk_idx = 0; chunk_idx < chunk_count; chunk_idx++) {
             // clip_l
             if (chunk_idx == 0) {
-                if (use_clip_l) {
-                    size_t chunk_len_l = 77;
-                    std::vector<int> chunk_tokens(clip_l_tokens.begin(),
-                                                  clip_l_tokens.begin() + chunk_len_l);
-                    std::vector<float> chunk_weights(clip_l_weights.begin(),
-                                                     clip_l_weights.begin() + chunk_len_l);
+                size_t chunk_len_l = 77;
+                std::vector<int> chunk_tokens(clip_l_tokens.begin(),
+                                              clip_l_tokens.begin() + chunk_len_l);
+                std::vector<float> chunk_weights(clip_l_weights.begin(),
+                                                 clip_l_weights.begin() + chunk_len_l);
 
-                    auto input_ids       = vector_to_ggml_tensor_i32(work_ctx, chunk_tokens);
-                    size_t max_token_idx = 0;
+                auto input_ids       = vector_to_ggml_tensor_i32(work_ctx, chunk_tokens);
+                size_t max_token_idx = 0;
 
                 auto it = std::find(chunk_tokens.begin(), chunk_tokens.end(), clip_l_tokenizer.EOS_TOKEN_ID);
                 max_token_idx = std::min<size_t>(std::distance(chunk_tokens.begin(), it), chunk_tokens.size() - 1);
@@ -1265,7 +1111,7 @@ struct FluxCLIPEmbedder : public Conditioner {
             }
 
             // t5
-            if (use_t5) {
+            {
                 std::vector<int> chunk_tokens(t5_tokens.begin() + chunk_idx * chunk_len,
                                               t5_tokens.begin() + (chunk_idx + 1) * chunk_len);
                 std::vector<float> chunk_weights(t5_weights.begin() + chunk_idx * chunk_len,
@@ -1292,9 +1138,6 @@ struct FluxCLIPEmbedder : public Conditioner {
                     float new_mean = ggml_tensor_mean(tensor);
                     ggml_tensor_scale(tensor, (original_mean / new_mean));
                 }
-            } else {
-                chunk_hidden_states = ggml_new_tensor_2d(work_ctx, GGML_TYPE_F32, 4096, chunk_len);
-                ggml_set_f32(chunk_hidden_states, 0.f);
             }
 
             int64_t t1 = ggml_time_ms();
@@ -1305,25 +1148,17 @@ struct FluxCLIPEmbedder : public Conditioner {
                     vec[i] = 0;
                 }
             }
+
             hidden_states_vec.insert(hidden_states_vec.end(),
                                      (float*)chunk_hidden_states->data,
                                      ((float*)chunk_hidden_states->data) + ggml_nelements(chunk_hidden_states));
         }
 
-        if (hidden_states_vec.size() > 0) {
-            hidden_states = vector_to_ggml_tensor(work_ctx, hidden_states_vec);
-            hidden_states = ggml_reshape_2d(work_ctx,
-                                            hidden_states,
-                                            chunk_hidden_states->ne[0],
-                                            ggml_nelements(hidden_states) / chunk_hidden_states->ne[0]);
-        } else {
-            hidden_states = ggml_new_tensor_2d(work_ctx, GGML_TYPE_F32, 4096, 256);
-            ggml_set_f32(hidden_states, 0.f);
-        }
-        if (pooled == NULL) {
-            pooled = ggml_new_tensor_1d(work_ctx, GGML_TYPE_F32, 768);
-            ggml_set_f32(pooled, 0.f);
-        }
+        hidden_states = vector_to_ggml_tensor(work_ctx, hidden_states_vec);
+        hidden_states = ggml_reshape_2d(work_ctx,
+                                        hidden_states,
+                                        chunk_hidden_states->ne[0],
+                                        ggml_nelements(hidden_states) / chunk_hidden_states->ne[0]);
         return SDCondition(hidden_states, pooled, NULL);
     }
 
@@ -1335,226 +1170,7 @@ struct FluxCLIPEmbedder : public Conditioner {
                                       int height,
                                       int adm_in_channels        = -1,
                                       bool force_zero_embeddings = false) {
-        auto tokens_and_weights = tokenize(text, chunk_len, true);
-        return get_learned_condition_common(work_ctx, n_threads, tokens_and_weights, clip_skip, force_zero_embeddings);
-    }
-
-    std::tuple<SDCondition, std::vector<bool>> get_learned_condition_with_trigger(ggml_context* work_ctx,
-                                                                                  int n_threads,
-                                                                                  const std::string& text,
-                                                                                  int clip_skip,
-                                                                                  int width,
-                                                                                  int height,
-                                                                                  int num_input_imgs,
-                                                                                  int adm_in_channels        = -1,
-                                                                                  bool force_zero_embeddings = false) {
-        GGML_ASSERT(0 && "Not implemented yet!");
-    }
-
-    std::string remove_trigger_from_prompt(ggml_context* work_ctx,
-                                           const std::string& prompt) {
-        GGML_ASSERT(0 && "Not implemented yet!");
-    }
-};
-
-struct PixArtCLIPEmbedder : public Conditioner {
-    T5UniGramTokenizer t5_tokenizer;
-    std::shared_ptr<T5Runner> t5;
-    size_t chunk_len = 512;
-
-    PixArtCLIPEmbedder(ggml_backend_t backend,
-                       std::map<std::string, enum ggml_type>& tensor_types,
-                       int clip_skip = -1) {
-        t5 = std::make_shared<T5Runner>(backend, tensor_types, "text_encoders.t5xxl.transformer");
-    }
-
-    void set_clip_skip(int clip_skip) {
-    }
-
-    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) {
-        t5->get_param_tensors(tensors, "text_encoders.t5xxl.transformer");
-    }
-
-    void alloc_params_buffer() {
-        t5->alloc_params_buffer();
-    }
-
-    void free_params_buffer() {
-        t5->free_params_buffer();
-    }
-
-    size_t get_params_buffer_size() {
-        size_t buffer_size = 0;
-
-        buffer_size += t5->get_params_buffer_size();
-
-        return buffer_size;
-    }
-
-    std::tuple<std::vector<int>, std::vector<float>, std::vector<float>> tokenize(std::string text,
-                                                                                  size_t max_length = 0,
-                                                                                  bool padding      = false) {
-        auto parsed_attention = parse_prompt_attention(text);
-
-        {
-            std::stringstream ss;
-            ss << "[";
-            for (const auto& item : parsed_attention) {
-                ss << "['" << item.first << "', " << item.second << "], ";
-            }
-            ss << "]";
-            LOG_DEBUG("parse '%s' to %s", text.c_str(), ss.str().c_str());
-        }
-
-        auto on_new_token_cb = [&](std::string& str, std::vector<int32_t>& bpe_tokens) -> bool {
-            return false;
-        };
-
-        std::vector<int> t5_tokens;
-        std::vector<float> t5_weights;
-        std::vector<float> t5_mask;
-        for (const auto& item : parsed_attention) {
-            const std::string& curr_text = item.first;
-            float curr_weight            = item.second;
-
-            std::vector<int> curr_tokens = t5_tokenizer.Encode(curr_text, true);
-            t5_tokens.insert(t5_tokens.end(), curr_tokens.begin(), curr_tokens.end());
-            t5_weights.insert(t5_weights.end(), curr_tokens.size(), curr_weight);
-        }
-
-        t5_tokenizer.pad_tokens(t5_tokens, t5_weights, &t5_mask, max_length, padding);
-
-        return {t5_tokens, t5_weights, t5_mask};
-    }
-
-    void modify_mask_to_attend_padding(struct ggml_tensor* mask, int max_seq_length, int num_extra_padding = 8) {
-        float* mask_data = (float*)mask->data;
-        int num_pad      = 0;
-        for (int64_t i = 0; i < max_seq_length; i++) {
-            if (num_pad >= num_extra_padding) {
-                break;
-            }
-            if (std::isinf(mask_data[i])) {
-                mask_data[i] = 0;
-                ++num_pad;
-            }
-        }
-        // LOG_DEBUG("PAD: %d", num_pad);
-    }
-
-    SDCondition get_learned_condition_common(ggml_context* work_ctx,
-                                             int n_threads,
-                                             std::tuple<std::vector<int>, std::vector<float>, std::vector<float>> token_and_weights,
-                                             int clip_skip,
-                                             bool force_zero_embeddings = false) {
-        auto& t5_tokens        = std::get<0>(token_and_weights);
-        auto& t5_weights       = std::get<1>(token_and_weights);
-        auto& t5_attn_mask_vec = std::get<2>(token_and_weights);
-
-        int64_t t0                              = ggml_time_ms();
-        struct ggml_tensor* hidden_states       = NULL;                                               // [N, n_token, 4096]
-        struct ggml_tensor* chunk_hidden_states = NULL;                                               // [n_token, 4096]
-        struct ggml_tensor* pooled              = NULL;                                               // [768,]
-        struct ggml_tensor* t5_attn_mask        = vector_to_ggml_tensor(work_ctx, t5_attn_mask_vec);  // [768,]
-
-        std::vector<float> hidden_states_vec;
-
-        size_t chunk_count = t5_tokens.size() / chunk_len;
-
-        bool use_mask                     = false;
-        const char* SD_CHROMA_USE_T5_MASK = getenv("SD_CHROMA_USE_T5_MASK");
-        if (SD_CHROMA_USE_T5_MASK != nullptr) {
-            std::string sd_chroma_use_t5_mask_str = SD_CHROMA_USE_T5_MASK;
-            if (sd_chroma_use_t5_mask_str == "ON" || sd_chroma_use_t5_mask_str == "TRUE") {
-                use_mask = true;
-            } else if (sd_chroma_use_t5_mask_str != "OFF" && sd_chroma_use_t5_mask_str != "FALSE") {
-                LOG_WARN("SD_CHROMA_USE_T5_MASK environment variable has unexpected value. Assuming default (\"OFF\"). (Expected \"OFF\"/\"FALSE\" or\"ON\"/\"TRUE\", got \"%s\")", SD_CHROMA_USE_T5_MASK);
-            }
-        }
-        for (int chunk_idx = 0; chunk_idx < chunk_count; chunk_idx++) {
-            // t5
-            std::vector<int> chunk_tokens(t5_tokens.begin() + chunk_idx * chunk_len,
-                                          t5_tokens.begin() + (chunk_idx + 1) * chunk_len);
-            std::vector<float> chunk_weights(t5_weights.begin() + chunk_idx * chunk_len,
-                                             t5_weights.begin() + (chunk_idx + 1) * chunk_len);
-            std::vector<float> chunk_mask(t5_attn_mask_vec.begin() + chunk_idx * chunk_len,
-                                          t5_attn_mask_vec.begin() + (chunk_idx + 1) * chunk_len);
-
-            auto input_ids          = vector_to_ggml_tensor_i32(work_ctx, chunk_tokens);
-            auto t5_attn_mask_chunk = use_mask ? vector_to_ggml_tensor(work_ctx, chunk_mask) : NULL;
-
-            t5->compute(n_threads,
-                        input_ids,
-                        &chunk_hidden_states,
-                        work_ctx,
-                        t5_attn_mask_chunk);
-            {
-                auto tensor         = chunk_hidden_states;
-                float original_mean = ggml_tensor_mean(tensor);
-                for (int i2 = 0; i2 < tensor->ne[2]; i2++) {
-                    for (int i1 = 0; i1 < tensor->ne[1]; i1++) {
-                        for (int i0 = 0; i0 < tensor->ne[0]; i0++) {
-                            float value = ggml_tensor_get_f32(tensor, i0, i1, i2);
-                            value *= chunk_weights[i1];
-                            ggml_tensor_set_f32(tensor, value, i0, i1, i2);
-                        }
-                    }
-                }
-                float new_mean = ggml_tensor_mean(tensor);
-                ggml_tensor_scale(tensor, (original_mean / new_mean));
-            }
-
-            int64_t t1 = ggml_time_ms();
-            LOG_DEBUG("computing condition graph completed, taking %" PRId64 " ms", t1 - t0);
-            if (force_zero_embeddings) {
-                float* vec = (float*)chunk_hidden_states->data;
-                for (int i = 0; i < ggml_nelements(chunk_hidden_states); i++) {
-                    vec[i] = 0;
-                }
-            }
-
-            hidden_states_vec.insert(hidden_states_vec.end(),
-                                     (float*)chunk_hidden_states->data,
-                                     ((float*)chunk_hidden_states->data) + ggml_nelements(chunk_hidden_states));
-        }
-
-        if (hidden_states_vec.size() > 0) {
-            hidden_states = vector_to_ggml_tensor(work_ctx, hidden_states_vec);
-            hidden_states = ggml_reshape_2d(work_ctx,
-                                            hidden_states,
-                                            chunk_hidden_states->ne[0],
-                                            ggml_nelements(hidden_states) / chunk_hidden_states->ne[0]);
-        } else {
-            hidden_states = ggml_new_tensor_2d(work_ctx, GGML_TYPE_F32, 4096, 256);
-            ggml_set_f32(hidden_states, 0.f);
-        }
-
-        int mask_pad                            = 1;
-        const char* SD_CHROMA_MASK_PAD_OVERRIDE = getenv("SD_CHROMA_MASK_PAD_OVERRIDE");
-        if (SD_CHROMA_MASK_PAD_OVERRIDE != nullptr) {
-            std::string mask_pad_str = SD_CHROMA_MASK_PAD_OVERRIDE;
-            try {
-                mask_pad = std::stoi(mask_pad_str);
-            } catch (const std::invalid_argument&) {
-                LOG_WARN("SD_CHROMA_MASK_PAD_OVERRIDE environment variable is not a valid integer (%s). Falling back to default (%d)", SD_CHROMA_MASK_PAD_OVERRIDE, mask_pad);
-            } catch (const std::out_of_range&) {
-                LOG_WARN("SD_CHROMA_MASK_PAD_OVERRIDE environment variable value is out of range for `int` type (%s). Falling back to default (%d)", SD_CHROMA_MASK_PAD_OVERRIDE, mask_pad);
-            }
-        }
-        modify_mask_to_attend_padding(t5_attn_mask, ggml_nelements(t5_attn_mask), mask_pad);
-
-        return SDCondition(hidden_states, t5_attn_mask, NULL);
-    }
-
-    SDCondition get_learned_condition(ggml_context* work_ctx,
-                                      int n_threads,
-                                      const std::string& text,
-                                      int clip_skip,
-                                      int width,
-                                      int height,
-                                      int adm_in_channels        = -1,
-                                      bool force_zero_embeddings = false) {
-        auto tokens_and_weights = tokenize(text, chunk_len, true);
+        auto tokens_and_weights = tokenize(text, 256, true);
         return get_learned_condition_common(work_ctx, n_threads, tokens_and_weights, clip_skip, force_zero_embeddings);
     }
 
