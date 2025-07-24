@@ -1,4 +1,4 @@
-name: Build Windows CUDA 12.9 (MSVC host)
+name: sd server
 
 on:
   push:
