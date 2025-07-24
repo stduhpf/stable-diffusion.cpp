@@ -130,8 +130,8 @@ public:
         body_feat = conv_body->forward(ctx, body_feat);
         feat      = ggml_add(ctx, feat, body_feat);
         // upsample
-        feat     = lrelu(ctx, conv_up1->forward(ctx, ggml_upscale(ctx, feat, 2)));
-        feat     = lrelu(ctx, conv_up2->forward(ctx, ggml_upscale(ctx, feat, 2)));
+        feat     = lrelu(ctx, conv_up1->forward(ctx, ggml_upscale(ctx, feat, 2, GGML_SCALE_MODE_NEAREST)));
+        feat     = lrelu(ctx, conv_up2->forward(ctx, ggml_upscale(ctx, feat, 2, GGML_SCALE_MODE_NEAREST)));
         auto out = conv_last->forward(ctx, lrelu(ctx, conv_hr->forward(ctx, feat)));
         return out;
     }
@@ -142,10 +142,9 @@ struct ESRGAN : public GGMLRunner {
     int scale     = 4;
     int tile_size = 128;  // avoid cuda OOM for 4gb VRAM
 
-    ESRGAN(ggml_backend_t backend,
-           ggml_type wtype)
-        : GGMLRunner(backend, wtype) {
-        rrdb_net.init(params_ctx, wtype);
+    ESRGAN(ggml_backend_t backend, std::map<std::string, enum ggml_type>& tensor_types)
+        : GGMLRunner(backend) {
+        rrdb_net.init(params_ctx, tensor_types, "");
     }
 
     std::string get_desc() {
@@ -184,14 +183,14 @@ struct ESRGAN : public GGMLRunner {
         return gf;
     }
 
-    void compute(const int n_threads,
+    bool compute(const int n_threads,
                  struct ggml_tensor* x,
                  ggml_tensor** output,
                  ggml_context* output_ctx = NULL) {
         auto get_graph = [&]() -> struct ggml_cgraph* {
             return build_graph(x);
         };
-        GGMLRunner::compute(get_graph, n_threads, false, output, output_ctx);
+        return GGMLRunner::compute(get_graph, n_threads, false, output, output_ctx);
     }
 };
 

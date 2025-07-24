@@ -1,0 +1,120 @@
+name: sd server
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/build-windows.yml'
+      - 'CMakeLists.txt'
+      - '**/*.cpp'
+      - '**/*.cu'
+  workflow_dispatch:
+
+jobs:
+  win-cuda-129:
+    runs-on: windows-2022
+
+    steps:
+    # 1 ─ репозиторий
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
+
+    # 2 ─ Ninja
+    - name: Install Ninja
+      shell: pwsh
+      run: choco install ninja -y
+
+    # 3 ─ кэш CUDA
+    - name: Restore CUDA cache
+      id: cache-cuda
+      uses: actions/cache@v4
+      with:
+        path: 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9'
+        key: cuda-12.9.1-win
+
+    # 4 ─ установка CUDA 12.9 (если нет кэша)
+    - name: Install CUDA 12.9.1
+      if: steps.cache-cuda.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $url = 'https://developer.download.nvidia.com/compute/cuda/12.9.1/local_installers/cuda_12.9.1_576.57_windows.exe'
+        $exe = "$env:RUNNER_TEMP\cuda129.exe"
+        Invoke-WebRequest -Uri $url -OutFile $exe
+        Start-Process $exe -ArgumentList '-s' -Wait
+
+    # 5 ─ конфигурация + сборка (MSVC host, статический CRT)
+    - name: Configure & Build
+      shell: cmd
+      run: |
+        rem 1) build dir
+        mkdir build
+
+        rem 2) MSVC + Windows SDK
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+
+        rem 3) Set CUDA environment
+        set "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
+        set "PATH=%CUDA_PATH%\bin;%CUDA_PATH%\libnvvp;%PATH%"
+
+        rem 4) CMake → Ninja
+        cd build
+        cmake .. -G Ninja ^
+          -DCMAKE_BUILD_TYPE=Release ^
+          -DCMAKE_TRY_COMPILE_CONFIGURATION=Release ^
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
+          -DGGML_CUDA=ON -DSD_CUDA=ON ^
+          "-DCMAKE_CUDA_ARCHITECTURES=61;75;86;89;120"
+
+        rem 5) сборка основного бинарника
+        cmake --build . --parallel
+
+        rem 6) сборка примера-сервера sd-server.exe
+        cmake --build . --parallel --target sd-server
+
+    # 6 ─ проверить что собралось
+    - name: List build outputs
+      shell: pwsh
+      run: |
+        Write-Host "Build directory contents:"
+        Get-ChildItem -Recurse build | Where-Object {$_.Extension -eq '.exe'} | ForEach-Object { Write-Host $_.FullName }
+
+    # 7 ─ собрать пакет
+    - name: Collect runtime
+      shell: pwsh
+      run: |
+        $pkg = 'package'
+        New-Item $pkg -ItemType Directory -Force | Out-Null
+        
+        # Найти исполняемые файлы в build
+        $exeFiles = Get-ChildItem -Recurse build -Name "*.exe"
+        Write-Host "Found executables: $($exeFiles -join ', ')"
+        
+        foreach ($exe in $exeFiles) {
+          $srcPath = Join-Path "build" $exe
+          $fileName = Split-Path $exe -Leaf
+          Write-Host "Copying $srcPath -> $pkg\$fileName"
+          Copy-Item $srcPath "$pkg\$fileName"
+        }
+        
+        # Копировать CUDA DLL
+        $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin"
+        if (Test-Path $cudaPath) {
+          robocopy $cudaPath $pkg `
+            cudart64_*.dll cublas64_*.dll cublasLt64_*.dll curand64_*.dll
+        } else {
+          Write-Warning "CUDA path not found: $cudaPath"
+        }
+        exit 0
+
+    # 8 ─ zip + artifact
+    - name: Create zip
+      shell: pwsh
+      run: 7z a sd-win-cuda12.9.zip package\*
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sd-win-cuda12.9
+        path: sd-win-cuda12.9.zip

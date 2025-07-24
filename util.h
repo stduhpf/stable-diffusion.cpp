@@ -7,6 +7,8 @@
 
 #include "stable-diffusion.h"
 
+typedef bool (*ggml_graph_eval_callback)(struct ggml_tensor * t, bool ask, void * user_data);
+
 bool ends_with(const std::string& str, const std::string& ending);
 bool starts_with(const std::string& str, const std::string& start);
 bool contains(const std::string& str, const std::string& substr);
@@ -45,7 +47,7 @@ sd_image_f32_t resize_sd_image_f32_t(sd_image_f32_t image, int target_width, int
 sd_image_f32_t clip_preprocess(sd_image_f32_t image, int size);
 
 std::string path_join(const std::string& p1, const std::string& p2);
-
+std::vector<std::string> splitString(const std::string& str, char delimiter);
 void pretty_progress(int step, int steps, float time);
 
 void log_printf(sd_log_level_t level, const char* file, int line, const char* format, ...);
@@ -53,6 +55,15 @@ void log_printf(sd_log_level_t level, const char* file, int line, const char* fo
 std::string trim(const std::string& s);
 
 std::vector<std::pair<std::string, float>> parse_prompt_attention(const std::string& text);
+ggml_graph_eval_callback get_callback_eval();
+void* get_callback_eval_user_data();
+
+sd_progress_cb_t sd_get_progress_callback();
+void* sd_get_progress_callback_data();
+
+sd_preview_cb_t sd_get_preview_callback();
+sd_preview_t sd_get_preview_mode();
+int sd_get_preview_interval();
 
 #define LOG_DEBUG(format, ...) log_printf(SD_LOG_DEBUG, __FILE__, __LINE__, format, ##__VA_ARGS__)
 #define LOG_INFO(format, ...) log_printf(SD_LOG_INFO, __FILE__, __LINE__, format, ##__VA_ARGS__)

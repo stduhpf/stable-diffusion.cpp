@@ -22,6 +22,7 @@
 #include <unistd.h>
 #endif
 
+#include "ggml-cpu.h"
 #include "ggml.h"
 #include "stable-diffusion.h"
 
@@ -112,18 +113,31 @@ std::vector<std::string> get_files_from_dir(const std::string& dir) {
 
     // Find the first file in the directory
     hFind = FindFirstFile(directoryPath, &findFileData);
-
+    bool isAbsolutePath = false;
     // Check if the directory was found
     if (hFind == INVALID_HANDLE_VALUE) {
-        printf("Unable to find directory.\n");
-        return files;
+        printf("Unable to find directory. Try with original path \n");
+
+        char directoryPathAbsolute[MAX_PATH];
+        sprintf(directoryPathAbsolute, "%s*", dir.c_str());
+
+        hFind = FindFirstFile(directoryPathAbsolute, &findFileData);
+        isAbsolutePath = true;
+        if (hFind == INVALID_HANDLE_VALUE) {
+            printf("Absolute path was also wrong.\n");
+            return files;
+        }
     }
 
     // Loop through all files in the directory
     do {
         // Check if the found file is a regular file (not a directory)
         if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            files.push_back(std::string(currentDirectory) + "\\" + dir + "\\" + std::string(findFileData.cFileName));
+            if (isAbsolutePath) {
+                files.push_back(dir + "\\" + std::string(findFileData.cFileName));
+            } else {
+                files.push_back(std::string(currentDirectory) + "\\" + dir + "\\" + std::string(findFileData.cFileName));
+            }
         }
     } while (FindNextFile(hFind, &findFileData) != 0);
 
@@ -233,6 +247,13 @@ int32_t get_num_physical_cores() {
 static sd_progress_cb_t sd_progress_cb = NULL;
 void* sd_progress_cb_data              = NULL;
 
+static sd_preview_cb_t sd_preview_cb = NULL;
+sd_preview_t sd_preview_mode         = SD_PREVIEW_NONE;
+int sd_preview_interval              = 1;
+
+static ggml_graph_eval_callback callback_eval = NULL;
+void * callback_eval_user_data = NULL;
+
 std::u32string utf8_to_utf32(const std::string& utf8_str) {
     std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> converter;
     return converter.from_bytes(utf8_str);
@@ -274,6 +295,23 @@ std::string path_join(const std::string& p1, const std::string& p2) {
     }
 
     return p1 + "/" + p2;
+}
+
+std::vector<std::string> splitString(const std::string& str, char delimiter) {
+    std::vector<std::string> result;
+    size_t start = 0;
+    size_t end   = str.find(delimiter);
+
+    while (end != std::string::npos) {
+        result.push_back(str.substr(start, end - start));
+        start = end + 1;
+        end   = str.find(delimiter, start);
+    }
+
+    // Add the last segment after the last delimiter
+    result.push_back(str.substr(start));
+
+    return result;
 }
 
 sd_image_t* preprocess_id_image(sd_image_t* img) {
@@ -330,7 +368,7 @@ void pretty_progress(int step, int steps, float time) {
         }
     }
     progress += "|";
-    printf(time > 1.0f ? "\r%s %i/%i - %.2fs/it" : "\r%s %i/%i - %.2fit/s",
+    printf(time > 1.0f ? "\r%s %i/%i - %.2fs/it" : "\r%s %i/%i - %.2fit/s\033[K",
            progress.c_str(), step, steps,
            time > 1.0f || time == 0 ? time : (1.0f / time));
     fflush(stdout);  // for linux
@@ -389,11 +427,47 @@ void sd_set_progress_callback(sd_progress_cb_t cb, void* data) {
     sd_progress_cb      = cb;
     sd_progress_cb_data = data;
 }
+void sd_set_preview_callback(sd_preview_cb_t cb, sd_preview_t mode = SD_PREVIEW_PROJ, int interval = 1) {
+    sd_preview_cb       = cb;
+    sd_preview_mode     = mode;
+    sd_preview_interval = interval;
+}
+
+sd_preview_cb_t sd_get_preview_callback() {
+    return sd_preview_cb;
+}
+
+sd_preview_t sd_get_preview_mode() {
+    return sd_preview_mode;
+}
+int sd_get_preview_interval() {
+    return sd_preview_interval;
+}
+
+sd_progress_cb_t sd_get_progress_callback() {
+    return sd_progress_cb;
+}
+void* sd_get_progress_callback_data() {
+    return sd_progress_cb_data;
+}
+
+void sd_set_backend_eval_callback(ggml_graph_eval_callback cb, void * data){
+    callback_eval = cb;
+    callback_eval_user_data = data;
+}
+
+ggml_graph_eval_callback get_callback_eval(){
+    return callback_eval;
+}
+
+void* get_callback_eval_user_data() {
+    return callback_eval_user_data;
+}
+
 const char* sd_get_system_info() {
     static char buffer[1024];
     std::stringstream ss;
     ss << "System Info: \n";
-    ss << "    BLAS = " << ggml_cpu_has_blas() << std::endl;
     ss << "    SSE3 = " << ggml_cpu_has_sse3() << std::endl;
     ss << "    AVX = " << ggml_cpu_has_avx() << std::endl;
     ss << "    AVX2 = " << ggml_cpu_has_avx2() << std::endl;

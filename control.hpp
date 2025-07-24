@@ -34,11 +34,11 @@ public:
 
     ControlNetBlock(SDVersion version = VERSION_SD1)
         : version(version) {
-        if (version == VERSION_SD2) {
+        if (sd_version_is_sd2(version)) {
             context_dim       = 1024;
             num_head_channels = 64;
             num_heads         = -1;
-        } else if (version == VERSION_SDXL) {
+        } else if (sd_version_is_sdxl(version)) {
             context_dim           = 2048;
             attention_resolutions = {4, 2};
             channel_mult          = {1, 2, 4};
@@ -58,7 +58,7 @@ public:
         // time_embed_1 is nn.SiLU()
         blocks["time_embed.2"] = std::shared_ptr<GGMLBlock>(new Linear(time_embed_dim, time_embed_dim));
 
-        if (version == VERSION_SDXL || version == VERSION_SVD) {
+        if (sd_version_is_sdxl(version) || version == VERSION_SVD) {
             blocks["label_emb.0.0"] = std::shared_ptr<GGMLBlock>(new Linear(adm_in_channels, time_embed_dim));
             // label_emb_1 is nn.SiLU()
             blocks["label_emb.0.2"] = std::shared_ptr<GGMLBlock>(new Linear(time_embed_dim, time_embed_dim));
@@ -317,10 +317,10 @@ struct ControlNet : public GGMLRunner {
     bool guided_hint_cached         = false;
 
     ControlNet(ggml_backend_t backend,
-               ggml_type wtype,
+               std::map<std::string, enum ggml_type>& tensor_types,
                SDVersion version = VERSION_SD1)
-        : GGMLRunner(backend, wtype), control_net(version) {
-        control_net.init(params_ctx, wtype);
+        : GGMLRunner(backend), control_net(version) {
+        control_net.init(params_ctx, tensor_types, "");
     }
 
     ~ControlNet() {
@@ -410,7 +410,7 @@ struct ControlNet : public GGMLRunner {
         return gf;
     }
 
-    void compute(int n_threads,
+    bool compute(int n_threads,
                  struct ggml_tensor* x,
                  struct ggml_tensor* hint,
                  struct ggml_tensor* timesteps,
@@ -426,8 +426,11 @@ struct ControlNet : public GGMLRunner {
             return build_graph(x, hint, timesteps, context, y);
         };
 
-        GGMLRunner::compute(get_graph, n_threads, false, output, output_ctx);
+        if (!GGMLRunner::compute(get_graph, n_threads, false, output, output_ctx)) {
+            return false;
+        }
         guided_hint_cached = true;
+        return true;
     }
 
     bool load_from_file(const std::string& file_path) {

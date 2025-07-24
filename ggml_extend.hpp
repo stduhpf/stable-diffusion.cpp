@@ -22,9 +22,14 @@
 
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "ggml.h"
+#include "ggml/src/ggml-impl.h"
 
-#ifdef SD_USE_CUBLAS
+#include "model.h"
+#include "util.h"
+
+#ifdef SD_USE_CUDA
 #include "ggml-cuda.h"
 #endif
 
@@ -49,11 +54,70 @@
 #define __STATIC_INLINE__ static inline
 #endif
 
-__STATIC_INLINE__ void ggml_log_callback_default(ggml_log_level level, const char* text, void* user_data) {
-    (void)level;
-    (void)user_data;
-    fputs(text, stderr);
-    fflush(stderr);
+// n-mode trensor-matrix product
+// example: 2-mode product
+// A: [ne03, k, ne01, ne00]
+// B: k rows, m columns => [k, m]
+// result is [ne03, m, ne01, ne00]
+__STATIC_INLINE__ struct ggml_tensor* ggml_mul_n_mode(struct ggml_context* ctx, struct ggml_tensor* a, struct ggml_tensor* b, int mode = 0) {
+    // reshape A
+    // swap 0th and nth axis
+    a       = ggml_cont(ctx, ggml_permute(ctx, a, mode, mode != 1 ? 1 : 0, mode != 2 ? 2 : 0, mode != 3 ? 3 : 0));
+    int ne1 = a->ne[1];
+    int ne2 = a->ne[2];
+    int ne3 = a->ne[3];
+    // make 2D
+    a = ggml_cont(ctx, ggml_reshape_2d(ctx, a, a->ne[0], (ne3 * ne2 * ne1)));
+
+    struct ggml_tensor* result = ggml_cont(ctx, ggml_transpose(ctx, ggml_mul_mat(ctx, a, b)));
+
+    // reshape output (same shape as a after permutation except first dim)
+    result = ggml_reshape_4d(ctx, result, result->ne[0], ne1, ne2, ne3);
+    // swap back 0th and nth axis
+    result = ggml_permute(ctx, result, mode, mode != 1 ? 1 : 0, mode != 2 ? 2 : 0, mode != 3 ? 3 : 0);
+    return result;
+}
+
+__STATIC_INLINE__ struct ggml_tensor* ggml_merge_lora(ggml_context* ctx, struct ggml_tensor* lora_down, struct ggml_tensor* lora_up, struct ggml_tensor* lora_mid = NULL) {
+    struct ggml_tensor* updown;
+    // flat lora tensors to multiply it
+    int64_t lora_up_rows  = lora_up->ne[ggml_n_dims(lora_up) - 1];
+    lora_up               = ggml_reshape_2d(ctx, lora_up, ggml_nelements(lora_up) / lora_up_rows, lora_up_rows);
+    auto lora_down_n_dims = ggml_n_dims(lora_down);
+    // assume n_dims should always be a multiple of 2 (otherwise rank 1 doesn't work)
+    lora_down_n_dims       = (lora_down_n_dims + lora_down_n_dims % 2);
+    int64_t lora_down_rows = lora_down->ne[lora_down_n_dims - 1];
+    lora_down              = ggml_reshape_2d(ctx, lora_down, ggml_nelements(lora_down) / lora_down_rows, lora_down_rows);
+
+    // ggml_mul_mat requires tensor b transposed
+    lora_down = ggml_cont(ctx, ggml_transpose(ctx, lora_down));
+    if (lora_mid == NULL) {
+        updown = ggml_mul_mat(ctx, lora_up, lora_down);
+        updown = ggml_cont(ctx, ggml_transpose(ctx, updown));
+    } else {
+        // undoing tucker decomposition for conv layers.
+        // lora_mid  has shape (3,    3,   Rank, Rank)
+        // lora_down has shape (Rank, In,  1,    1)
+        // lora_up   has shape (Rank, Out, 1,    1)
+        // conv layer shape is (3,    3,   Out,  In)
+        updown = ggml_mul_n_mode(ctx, ggml_mul_n_mode(ctx, lora_mid, lora_down, 3), lora_up, 2);
+        updown = ggml_cont(ctx, updown);
+    }
+    return updown;
+}
+
+// Kronecker product
+// [ne03,ne02,ne01,ne00] x [ne13,ne12,ne11,ne10] => [ne03*ne13,ne02*ne12,ne01*ne11,ne00*ne10]
+__STATIC_INLINE__ struct ggml_tensor* ggml_kronecker(ggml_context* ctx, struct ggml_tensor* a, struct ggml_tensor* b) {
+    return ggml_mul(ctx,
+                    ggml_upscale_ext(ctx,
+                                     a,
+                                     a->ne[0] * b->ne[0],
+                                     a->ne[1] * b->ne[1],
+                                     a->ne[2] * b->ne[2],
+                                     a->ne[3] * b->ne[3],
+                                     GGML_SCALE_MODE_NEAREST),
+                    b);
 }
 
 __STATIC_INLINE__ void ggml_tensor_set_f32_randn(struct ggml_tensor* tensor, std::shared_ptr<RNG> rng) {
@@ -100,17 +164,11 @@ __STATIC_INLINE__ ggml_fp16_t ggml_tensor_get_f16(const ggml_tensor* tensor, int
 
 static struct ggml_tensor* get_tensor_from_graph(struct ggml_cgraph* gf, const char* name) {
     struct ggml_tensor* res = NULL;
-    for (int i = 0; i < gf->n_nodes; i++) {
-        // printf("%d, %s \n", i, gf->nodes[i]->name);
-        if (strcmp(ggml_get_name(gf->nodes[i]), name) == 0) {
-            res = gf->nodes[i];
-            break;
-        }
-    }
-    for (int i = 0; i < gf->n_leafs; i++) {
-        // printf("%d, %s \n", i, gf->leafs[i]->name);
-        if (strcmp(ggml_get_name(gf->leafs[i]), name) == 0) {
-            res = gf->leafs[i];
+    for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
+        struct ggml_tensor* node = ggml_graph_node(gf, i);
+        // printf("%d, %s \n", i, ggml_get_name(node));
+        if (strcmp(ggml_get_name(node), name) == 0) {
+            res = node;
             break;
         }
     }
@@ -293,6 +351,57 @@ __STATIC_INLINE__ void sd_image_to_tensor(const uint8_t* image_data,
     }
 }
 
+__STATIC_INLINE__ void sd_mask_to_tensor(const uint8_t* image_data,
+                                         struct ggml_tensor* output,
+                                         bool scale = true) {
+    int64_t width    = output->ne[0];
+    int64_t height   = output->ne[1];
+    int64_t channels = output->ne[2];
+    GGML_ASSERT(channels == 1 && output->type == GGML_TYPE_F32);
+    for (int iy = 0; iy < height; iy++) {
+        for (int ix = 0; ix < width; ix++) {
+            float value = *(image_data + iy * width * channels + ix);
+            if (scale) {
+                value /= 255.f;
+            }
+            ggml_tensor_set_f32(output, value, ix, iy);
+        }
+    }
+}
+
+__STATIC_INLINE__ void sd_apply_mask(struct ggml_tensor* image_data,
+                                     struct ggml_tensor* mask,
+                                     struct ggml_tensor* output,
+                                     float masked_value = 0.5f) {
+    int64_t width    = output->ne[0];
+    int64_t height   = output->ne[1];
+    int64_t channels = output->ne[2];
+    for (int ix = 0; ix < mask->ne[0]; ix++) {
+        for (int iy = 0; iy < mask->ne[1]; iy++) {
+            float m = ggml_tensor_get_f32(mask, ix, iy);
+            m       = round(m);  // inpaint models need binary masks
+            ggml_tensor_set_f32(mask, m, ix, iy);
+        }
+    }
+    float rescale_mx = mask->ne[0] / output->ne[0];
+    float rescale_my = mask->ne[1] / output->ne[1];
+    GGML_ASSERT(output->type == GGML_TYPE_F32);
+    for (int ix = 0; ix < width; ix++) {
+        for (int iy = 0; iy < height; iy++) {
+            int mx  = (int)(ix * rescale_mx);
+            int my  = (int)(iy * rescale_my);
+            float m = ggml_tensor_get_f32(mask, mx, my);
+            m       = round(m);  // inpaint models need binary masks
+            ggml_tensor_set_f32(mask, m, mx, my);
+            for (int k = 0; k < channels; k++) {
+                float value = ggml_tensor_get_f32(image_data, ix, iy, k);
+                value       = (1 - m) * (value - masked_value) + masked_value;
+                ggml_tensor_set_f32(output, value, ix, iy, k);
+            }
+        }
+    }
+}
+
 __STATIC_INLINE__ void sd_mul_images_to_tensor(const uint8_t* image_data,
                                                struct ggml_tensor* output,
                                                int idx,
@@ -363,7 +472,10 @@ __STATIC_INLINE__ void ggml_merge_tensor_2d(struct ggml_tensor* input,
                                             struct ggml_tensor* output,
                                             int x,
                                             int y,
-                                            int overlap) {
+                                            int overlap_x,
+                                            int overlap_y,
+                                            int x_skip = 0,
+                                            int y_skip = 0) {
     int64_t width    = input->ne[0];
     int64_t height   = input->ne[1];
     int64_t channels = input->ne[2];
@@ -372,17 +484,17 @@ __STATIC_INLINE__ void ggml_merge_tensor_2d(struct ggml_tensor* input,
     int64_t img_height = output->ne[1];
 
     GGML_ASSERT(input->type == GGML_TYPE_F32 && output->type == GGML_TYPE_F32);
-    for (int iy = 0; iy < height; iy++) {
-        for (int ix = 0; ix < width; ix++) {
+    for (int iy = y_skip; iy < height; iy++) {
+        for (int ix = x_skip; ix < width; ix++) {
             for (int k = 0; k < channels; k++) {
                 float new_value = ggml_tensor_get_f32(input, ix, iy, k);
-                if (overlap > 0) {  // blend colors in overlapped area
+                if (overlap_x > 0 || overlap_y > 0) {  // blend colors in overlapped area
                     float old_value = ggml_tensor_get_f32(output, x + ix, y + iy, k);
 
-                    const float x_f_0 = (x > 0) ? ix / float(overlap) : 1;
-                    const float x_f_1 = (x < (img_width - width)) ? (width - ix) / float(overlap) : 1;
-                    const float y_f_0 = (y > 0) ? iy / float(overlap) : 1;
-                    const float y_f_1 = (y < (img_height - height)) ? (height - iy) / float(overlap) : 1;
+                    const float x_f_0 = (overlap_x > 0 && x > 0) ? (ix - x_skip) / float(overlap_x) : 1;
+                    const float x_f_1 = (overlap_x > 0 && x < (img_width - width)) ? (width - ix) / float(overlap_x) : 1;
+                    const float y_f_0 = (overlap_y > 0 && y > 0) ? (iy - y_skip) / float(overlap_y) : 1;
+                    const float y_f_1 = (overlap_y > 0 && y < (img_height - height)) ? (height - iy) / float(overlap_y) : 1;
 
                     const float x_f = std::min(std::min(x_f_0, x_f_1), 1.f);
                     const float y_f = std::min(std::min(y_f_0, y_f_1), 1.f);
@@ -495,20 +607,96 @@ __STATIC_INLINE__ void ggml_tensor_scale_output(struct ggml_tensor* src) {
 
 typedef std::function<void(ggml_tensor*, ggml_tensor*, bool)> on_tile_process;
 
+__STATIC_INLINE__ void
+sd_tiling_calc_tiles(int &num_tiles_dim, float& tile_overlap_factor_dim, int small_dim, int tile_size, const float tile_overlap_factor) {
+
+    int tile_overlap     = (tile_size * tile_overlap_factor);
+    int non_tile_overlap = tile_size - tile_overlap;
+
+    num_tiles_dim = (small_dim - tile_overlap) / non_tile_overlap;
+    int overshoot_dim = ((num_tiles_dim + 1) * non_tile_overlap + tile_overlap) % small_dim;
+
+    if ((overshoot_dim != non_tile_overlap) && (overshoot_dim <= num_tiles_dim * (tile_size / 2 - tile_overlap))) {
+        // if tiles don't fit perfectly using the desired overlap
+        // and there is enough room to squeeze an extra tile without overlap becoming >0.5
+        num_tiles_dim++;
+    }
+
+    tile_overlap_factor_dim = (float)(tile_size * num_tiles_dim - small_dim) / (float)(tile_size * (num_tiles_dim - 1));
+    if (num_tiles_dim <= 2) {
+        if (small_dim <= tile_size) {
+            num_tiles_dim           = 1;
+            tile_overlap_factor_dim = 0;
+        } else {
+            num_tiles_dim           = 2;
+            tile_overlap_factor_dim = (2 * tile_size - small_dim) / (float)tile_size;
+        }
+    }
+}
+
 // Tiling
-__STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const int scale, const int tile_size, const float tile_overlap_factor, on_tile_process on_processing) {
+__STATIC_INLINE__ void sd_tiling_non_square(ggml_tensor* input, ggml_tensor* output, const int scale,
+                                            const int p_tile_size_x, const int p_tile_size_y,
+                                            const float tile_overlap_factor, on_tile_process on_processing) {
+
+    output = ggml_set_f32(output, 0);
+
     int input_width   = (int)input->ne[0];
     int input_height  = (int)input->ne[1];
     int output_width  = (int)output->ne[0];
     int output_height = (int)output->ne[1];
+
+    GGML_ASSERT(input_width / output_width == input_height / output_height && output_width / input_width == output_height / input_height);
+    GGML_ASSERT(input_width / output_width == scale || output_width / input_width == scale);
+
+    int small_width  = output_width;
+    int small_height = output_height;
+
+    bool big_out = output_width > input_width;
+    if (big_out) {
+        // Ex: decode
+        small_width  = input_width;
+        small_height = input_height;
+    }
+
+    int num_tiles_x;
+    float tile_overlap_factor_x;
+    sd_tiling_calc_tiles(num_tiles_x, tile_overlap_factor_x, small_width, p_tile_size_x, tile_overlap_factor);
+
+    int num_tiles_y;
+    float tile_overlap_factor_y;
+    sd_tiling_calc_tiles(num_tiles_y, tile_overlap_factor_y, small_height, p_tile_size_y, tile_overlap_factor);
+
+    LOG_DEBUG("num tiles : %d, %d ", num_tiles_x, num_tiles_y);
+    LOG_DEBUG("optimal overlap : %f, %f (targeting %f)", tile_overlap_factor_x, tile_overlap_factor_y, tile_overlap_factor);
+
     GGML_ASSERT(input_width % 2 == 0 && input_height % 2 == 0 && output_width % 2 == 0 && output_height % 2 == 0);  // should be multiple of 2
 
-    int tile_overlap     = (int32_t)(tile_size * tile_overlap_factor);
-    int non_tile_overlap = tile_size - tile_overlap;
+    int tile_overlap_x     = (int32_t)(p_tile_size_x * tile_overlap_factor_x);
+    int non_tile_overlap_x = p_tile_size_x - tile_overlap_x;
+
+    int tile_overlap_y     = (int32_t)(p_tile_size_y * tile_overlap_factor_y);
+    int non_tile_overlap_y = p_tile_size_y - tile_overlap_y;
+
+    int tile_size_x = p_tile_size_x < small_width ? p_tile_size_x : small_width;
+    int tile_size_y = p_tile_size_y < small_height ? p_tile_size_y : small_height;
+
+    int input_tile_size_x  = tile_size_x;
+    int input_tile_size_y  = tile_size_y;
+    int output_tile_size_x = tile_size_x;
+    int output_tile_size_y = tile_size_y;
+
+    if (big_out) {
+        output_tile_size_x *= scale;
+        output_tile_size_y *= scale;
+    } else {
+        input_tile_size_x *= scale;
+        input_tile_size_y *= scale;
+    }
 
     struct ggml_init_params params = {};
-    params.mem_size += tile_size * tile_size * input->ne[2] * sizeof(float);                       // input chunk
-    params.mem_size += (tile_size * scale) * (tile_size * scale) * output->ne[2] * sizeof(float);  // output chunk
+    params.mem_size += input_tile_size_x * input_tile_size_y * input->ne[2] * sizeof(float);     // input chunk
+    params.mem_size += output_tile_size_x * output_tile_size_y * output->ne[2] * sizeof(float);  // output chunk
     params.mem_size += 3 * ggml_tensor_overhead();
     params.mem_buffer = NULL;
     params.no_alloc   = false;
@@ -523,29 +711,50 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
     }
 
     // tiling
-    ggml_tensor* input_tile  = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, tile_size, tile_size, input->ne[2], 1);
-    ggml_tensor* output_tile = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, tile_size * scale, tile_size * scale, output->ne[2], 1);
-    on_processing(input_tile, NULL, true);
-    int num_tiles = ceil((float)input_width / non_tile_overlap) * ceil((float)input_height / non_tile_overlap);
-    LOG_INFO("processing %i tiles", num_tiles);
-    pretty_progress(1, num_tiles, 0.0f);
+    ggml_tensor* input_tile  = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, input_tile_size_x, input_tile_size_y, input->ne[2], 1);
+    ggml_tensor* output_tile = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, output_tile_size_x, output_tile_size_y, output->ne[2], 1);
+    int num_tiles            = num_tiles_x * num_tiles_y;
+    LOG_DEBUG("processing %i tiles", num_tiles);
+    pretty_progress(0, num_tiles, 0.0f);
     int tile_count = 1;
     bool last_y = false, last_x = false;
     float last_time = 0.0f;
-    for (int y = 0; y < input_height && !last_y; y += non_tile_overlap) {
-        if (y + tile_size >= input_height) {
-            y      = input_height - tile_size;
+    for (int y = 0; y < small_height && !last_y; y += non_tile_overlap_y) {
+        int dy = 0;
+        if (y + tile_size_y >= small_height) {
+            int _y = y;
+            y      = small_height - tile_size_y;
+            dy     = _y - y;
+            if (big_out) {
+                dy *= scale;
+            }
             last_y = true;
         }
-        for (int x = 0; x < input_width && !last_x; x += non_tile_overlap) {
-            if (x + tile_size >= input_width) {
-                x      = input_width - tile_size;
+        for (int x = 0; x < small_width && !last_x; x += non_tile_overlap_x) {
+            int dx = 0;
+            if (x + tile_size_x >= small_width) {
+                int _x = x;
+                x      = small_width - tile_size_x;
+                dx     = _x - x;
+                if (big_out) {
+                    dx *= scale;
+                }
                 last_x = true;
             }
+
+            int x_in  = big_out ? x : scale * x;
+            int y_in  = big_out ? y : scale * y;
+            int x_out = big_out ? x * scale : x;
+            int y_out = big_out ? y * scale : y;
+
+            int overlap_x_out = big_out ? tile_overlap_x * scale : tile_overlap_x;
+            int overlap_y_out = big_out ? tile_overlap_y * scale : tile_overlap_y;
+
             int64_t t1 = ggml_time_ms();
-            ggml_split_tensor_2d(input, input_tile, x, y);
+            ggml_split_tensor_2d(input, input_tile, x_in, y_in);
             on_processing(input_tile, output_tile, false);
-            ggml_merge_tensor_2d(output_tile, output, x * scale, y * scale, tile_overlap * scale);
+            ggml_merge_tensor_2d(output_tile, output, x_out, y_out, overlap_x_out, overlap_y_out, dx, dy);
+
             int64_t t2 = ggml_time_ms();
             last_time  = (t2 - t1) / 1000.0f;
             pretty_progress(tile_count, num_tiles, last_time);
@@ -557,6 +766,11 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
         pretty_progress(num_tiles, num_tiles, last_time);
     }
     ggml_free(tiles_ctx);
+}
+
+__STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const int scale,
+    const int tile_size, const float tile_overlap_factor, on_tile_process on_processing) {
+    sd_tiling_non_square(input, output, scale, tile_size, tile_size, tile_overlap_factor, on_processing);
 }
 
 __STATIC_INLINE__ struct ggml_tensor* ggml_group_norm_32(struct ggml_context* ctx,
@@ -675,18 +889,16 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention(struct ggml_context* ctx
                                                         struct ggml_tensor* k,
                                                         struct ggml_tensor* v,
                                                         bool mask = false) {
-#if defined(SD_USE_FLASH_ATTENTION) && !defined(SD_USE_CUBLAS) && !defined(SD_USE_METAL) && !defined(SD_USE_VULKAN) && !defined(SD_USE_SYCL)
+#if defined(SD_USE_FLASH_ATTENTION) && !defined(SD_USE_CUDA) && !defined(SD_USE_METAL) && !defined(SD_USE_VULKAN) && !defined(SD_USE_SYCL)
     struct ggml_tensor* kqv = ggml_flash_attn(ctx, q, k, v, false);  // [N * n_head, n_token, d_head]
 #else
-    float d_head = (float)q->ne[0];
-
+    float d_head           = (float)q->ne[0];
     struct ggml_tensor* kq = ggml_mul_mat(ctx, k, q);  // [N * n_head, n_token, n_k]
     kq                     = ggml_scale_inplace(ctx, kq, 1.0f / sqrt(d_head));
     if (mask) {
         kq = ggml_diag_mask_inf_inplace(ctx, kq, 0);
     }
-    kq = ggml_soft_max_inplace(ctx, kq);
-
+    kq                      = ggml_soft_max_inplace(ctx, kq);
     struct ggml_tensor* kqv = ggml_mul_mat(ctx, v, kq);  // [N * n_head, n_token, d_head]
 #endif
     return kqv;
@@ -703,7 +915,8 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
                                                             int64_t n_head,
                                                             struct ggml_tensor* mask = NULL,
                                                             bool diag_mask_inf       = false,
-                                                            bool skip_reshape        = false) {
+                                                            bool skip_reshape        = false,
+                                                            bool flash_attn          = false) {
     int64_t L_q;
     int64_t L_k;
     int64_t C;
@@ -734,13 +947,54 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
 
     float scale = (1.0f / sqrt((float)d_head));
 
-    bool use_flash_attn = false;
-    ggml_tensor* kqv    = NULL;
-    if (use_flash_attn) {
+    // if (flash_attn) {
+    //     LOG_DEBUG("attention_ext L_q:%d L_k:%d n_head:%d C:%d d_head:%d N:%d", L_q, L_k, n_head, C, d_head, N);
+    // }
+    //  is there anything oddly shaped?? ping Green-Sky if you can trip this assert
+    GGML_ASSERT(((L_k % 256 == 0) && L_q == L_k) || !(L_k % 256 == 0));
+
+    bool can_use_flash_attn = true;
+    can_use_flash_attn      = can_use_flash_attn && L_k % 256 == 0;
+    can_use_flash_attn      = can_use_flash_attn && d_head % 64 == 0;  // double check
+
+    // cuda max d_head seems to be 256, cpu does seem to work with 512
+    can_use_flash_attn = can_use_flash_attn && d_head <= 256;  // double check
+
+    if (mask != nullptr) {
+        // TODO(Green-Sky): figure out if we can bend t5 to work too
+        can_use_flash_attn = can_use_flash_attn && mask->ne[2] == 1;
+        can_use_flash_attn = can_use_flash_attn && mask->ne[3] == 1;
+    }
+
+    // TODO(Green-Sky): more pad or disable for funny tensor shapes
+
+    ggml_tensor* kqv = nullptr;
+    // GGML_ASSERT((flash_attn && can_use_flash_attn) || !flash_attn);
+    if (can_use_flash_attn && flash_attn) {
+        // LOG_DEBUG("using flash attention");
+        k = ggml_cast(ctx, k, GGML_TYPE_F16);
+
         v = ggml_cont(ctx, ggml_permute(ctx, v, 0, 2, 1, 3));  // [N, n_head, L_k, d_head]
         v = ggml_reshape_3d(ctx, v, d_head, L_k, n_head * N);  // [N * n_head, L_k, d_head]
-        LOG_DEBUG("k->ne[1] == %d", k->ne[1]);
+        v = ggml_cast(ctx, v, GGML_TYPE_F16);
+
+        if (mask != nullptr) {
+            mask = ggml_transpose(ctx, mask);
+
+            if (mask->ne[1] < GGML_PAD(q->ne[1], GGML_KQ_MASK_PAD)) {
+                LOG_DEBUG("mask dims %ld, %ld, %ld, %ld\n", mask->ne[0], mask->ne[1], mask->ne[2], mask->ne[3]);
+                LOG_DEBUG("needs padding, padding from %ld to %ld\n", mask->ne[1], GGML_PAD(q->ne[1], GGML_KQ_MASK_PAD));
+                mask = ggml_pad(ctx, mask, 0, GGML_PAD(q->ne[1], GGML_KQ_MASK_PAD) - mask->ne[1], 0, 0);
+            }
+
+            mask = ggml_cast(ctx, mask, GGML_TYPE_F16);
+        }
+
         kqv = ggml_flash_attn_ext(ctx, q, k, v, mask, scale, 0, 0);
+        ggml_flash_attn_ext_set_prec(kqv, GGML_PREC_F32);
+
+        // kqv = ggml_view_3d(ctx, kqv, d_head, n_head, L_k, kqv->nb[1], kqv->nb[2], 0);
+        kqv = ggml_view_3d(ctx, kqv, d_head, n_head, L_q, kqv->nb[1], kqv->nb[2], 0);
     } else {
         v = ggml_cont(ctx, ggml_permute(ctx, v, 1, 2, 0, 3));  // [N, n_head, d_head, L_k]
         v = ggml_reshape_3d(ctx, v, L_k, d_head, n_head * N);  // [N * n_head, d_head, L_k]
@@ -748,7 +1002,7 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
         auto kq = ggml_mul_mat(ctx, k, q);  // [N * n_head, L_q, L_k]
         kq      = ggml_scale_inplace(ctx, kq, scale);
         if (mask) {
-            kq = ggml_add(ctx, kq, mask);
+            kq = ggml_add_inplace(ctx, kq, mask);
         }
         if (diag_mask_inf) {
             kq = ggml_diag_mask_inf_inplace(ctx, kq, 0);
@@ -756,10 +1010,12 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
         kq = ggml_soft_max_inplace(ctx, kq);
 
         kqv = ggml_mul_mat(ctx, v, kq);  // [N * n_head, L_q, d_head]
+
+        kqv = ggml_reshape_4d(ctx, kqv, d_head, L_q, n_head, N);  // [N, n_head, L_q, d_head]
+        kqv = ggml_permute(ctx, kqv, 0, 2, 1, 3);                 // [N, L_q, n_head, d_head]
     }
 
-    kqv = ggml_reshape_4d(ctx, kqv, d_head, L_q, n_head, N);   // [N, n_head, L_q, d_head]
-    kqv = ggml_cont(ctx, ggml_permute(ctx, kqv, 0, 2, 1, 3));  // [N, L_q, n_head, d_head]
+    kqv = ggml_cont(ctx, kqv);
     kqv = ggml_reshape_3d(ctx, kqv, d_head * n_head, L_q, N);  // [N, L_q, C]
 
     return kqv;
@@ -801,7 +1057,7 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_group_norm(struct ggml_context* ct
 }
 
 __STATIC_INLINE__ void ggml_backend_tensor_get_and_sync(ggml_backend_t backend, const struct ggml_tensor* tensor, void* data, size_t offset, size_t size) {
-#if defined(SD_USE_CUBLAS) || defined(SD_USE_SYCL)
+#if defined(SD_USE_CUDA) || defined(SD_USE_SYCL)
     if (!ggml_backend_is_cpu(backend)) {
         ggml_backend_tensor_get_async(backend, tensor, data, offset, size);
         ggml_backend_synchronize(backend);
@@ -924,8 +1180,8 @@ __STATIC_INLINE__ size_t ggml_tensor_num(ggml_context* ctx) {
 }
 
 /* SDXL with LoRA requires more space */
-#define MAX_PARAMS_TENSOR_NUM 15360
-#define MAX_GRAPH_SIZE 15360
+#define MAX_PARAMS_TENSOR_NUM 32768
+#define MAX_GRAPH_SIZE 32768
 
 struct GGMLRunner {
 protected:
@@ -939,7 +1195,6 @@ protected:
 
     std::map<struct ggml_tensor*, const void*> backend_tensor_data_map;
 
-    ggml_type wtype        = GGML_TYPE_F32;
     ggml_backend_t backend = NULL;
 
     void alloc_params_ctx() {
@@ -1015,8 +1270,8 @@ protected:
 public:
     virtual std::string get_desc() = 0;
 
-    GGMLRunner(ggml_backend_t backend, ggml_type wtype = GGML_TYPE_F32)
-        : backend(backend), wtype(wtype) {
+    GGMLRunner(ggml_backend_t backend)
+        : backend(backend) {
         alloc_params_ctx();
     }
 
@@ -1047,6 +1302,11 @@ public:
                   params_buffer_size / (1024.0 * 1024.0),
                   ggml_backend_is_cpu(backend) ? "RAM" : "VRAM",
                   num_tensors);
+        // printf("%s params backend buffer size = % 6.2f MB(%s) (%i tensors)\n",
+        //           get_desc().c_str(),
+        //           params_buffer_size / (1024.0 * 1024.0),
+        //           ggml_backend_is_cpu(backend) ? "RAM" : "VRAM",
+        //           num_tensors);
         return true;
     }
 
@@ -1093,12 +1353,14 @@ public:
         }
     }
 
-    void compute(get_graph_cb_t get_graph,
+    bool compute(get_graph_cb_t get_graph,
                  int n_threads,
                  bool free_compute_buffer_immediately = true,
                  struct ggml_tensor** output          = NULL,
                  struct ggml_context* output_ctx      = NULL) {
-        alloc_compute_buffer(get_graph);
+        if (!alloc_compute_buffer(get_graph)) {
+            return false;
+        }
         reset_compute_ctx();
         struct ggml_cgraph* gf = get_graph();
         GGML_ASSERT(ggml_gallocr_alloc_graph(compute_allocr, gf));
@@ -1107,18 +1369,44 @@ public:
             ggml_backend_cpu_set_n_threads(backend, n_threads);
         }
 
-#ifdef SD_USE_METAL
-        if (ggml_backend_is_metal(backend)) {
-            ggml_backend_metal_set_n_cb(backend, n_threads);
+        auto callback_eval = get_callback_eval();
+
+        if (!callback_eval) {
+            ggml_backend_graph_compute(backend, gf);
+        } else {
+            void* callback_eval_user_data = get_callback_eval_user_data();
+            for (int j0 = 0; j0 < gf->n_nodes; j0++) {
+                struct ggml_tensor* t = gf->nodes[j0];
+
+                // check if the user needs data from this node
+                bool need = callback_eval(t, true, callback_eval_user_data);
+
+                int j1 = j0;
+
+                // determine the range [j0, j1] of nodes that can be computed together
+                while (!need && j1 < gf->n_nodes - 1) {
+                    t    = gf->nodes[++j1];
+                    need = callback_eval(t, true, callback_eval_user_data);
+                }
+
+                struct ggml_cgraph gv = ggml_graph_view(gf, j0, j1 + 1);
+
+                ggml_backend_graph_compute_async(backend, &gv);
+
+                if (need && !callback_eval(t, false, callback_eval_user_data)) {
+                    break;
+                }
+
+                j0 = j1;
+            }
+            ggml_backend_synchronize(backend);
         }
-#endif
-        ggml_backend_graph_compute(backend, gf);
 
 #ifdef GGML_PERF
         ggml_graph_print(gf);
 #endif
         if (output != NULL) {
-            auto result = gf->nodes[gf->n_nodes - 1];
+            auto result = ggml_graph_node(gf, -1);
             if (*output == NULL && output_ctx != NULL) {
                 *output = ggml_dup_tensor(output_ctx, result);
             }
@@ -1130,6 +1418,7 @@ public:
         if (free_compute_buffer_immediately) {
             free_compute_buffer();
         }
+        return true;
     }
 };
 
@@ -1140,20 +1429,22 @@ protected:
     GGMLBlockMap blocks;
     ParameterMap params;
 
-    void init_blocks(struct ggml_context* ctx, ggml_type wtype) {
+    void init_blocks(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
         for (auto& pair : blocks) {
             auto& block = pair.second;
-
-            block->init(ctx, wtype);
+            block->init(ctx, tensor_types, prefix + pair.first);
         }
     }
 
-    virtual void init_params(struct ggml_context* ctx, ggml_type wtype) {}
+    virtual void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {}
 
 public:
-    void init(struct ggml_context* ctx, ggml_type wtype) {
-        init_blocks(ctx, wtype);
-        init_params(ctx, wtype);
+    void init(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, std::string prefix = "") {
+        if (prefix.size() > 0) {
+            prefix = prefix + ".";
+        }
+        init_blocks(ctx, tensor_types, prefix);
+        init_params(ctx, tensor_types, prefix);
     }
 
     size_t get_params_num() {
@@ -1209,13 +1500,16 @@ protected:
     bool bias;
     bool force_f32;
 
-    void init_params(struct ggml_context* ctx, ggml_type wtype) {
+    void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
+        enum ggml_type wtype = (tensor_types.find(prefix + "weight") != tensor_types.end()) ? tensor_types[prefix + "weight"] : GGML_TYPE_F32;
         if (in_features % ggml_blck_size(wtype) != 0 || force_f32) {
             wtype = GGML_TYPE_F32;
         }
         params["weight"] = ggml_new_tensor_2d(ctx, wtype, in_features, out_features);
+        ggml_set_name(params["weight"], (prefix + "weight").c_str());
         if (bias) {
-            params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
+            enum ggml_type wtype = GGML_TYPE_F32;  //(tensor_types.ypes.find(prefix + "bias") != tensor_types.end()) ? tensor_types[prefix + "bias"] : GGML_TYPE_F32;
+            params["bias"]       = ggml_new_tensor_1d(ctx, wtype, out_features);
         }
     }
 
@@ -1243,9 +1537,9 @@ class Embedding : public UnaryBlock {
 protected:
     int64_t embedding_dim;
     int64_t num_embeddings;
-
-    void init_params(struct ggml_context* ctx, ggml_type wtype) {
-        params["weight"] = ggml_new_tensor_2d(ctx, wtype, embedding_dim, num_embeddings);
+    void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
+        enum ggml_type wtype = (tensor_types.find(prefix + "weight") != tensor_types.end()) ? tensor_types[prefix + "weight"] : GGML_TYPE_F32;
+        params["weight"]     = ggml_new_tensor_2d(ctx, wtype, embedding_dim, num_embeddings);
     }
 
 public:
@@ -1283,10 +1577,12 @@ protected:
     std::pair<int, int> dilation;
     bool bias;
 
-    void init_params(struct ggml_context* ctx, ggml_type wtype) {
-        params["weight"] = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kernel_size.second, kernel_size.first, in_channels, out_channels);
+    void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
+        enum ggml_type wtype = GGML_TYPE_F16;  //(tensor_types.find(prefix + "weight") != tensor_types.end()) ? tensor_types[prefix + "weight"] : GGML_TYPE_F16;
+        params["weight"]     = ggml_new_tensor_4d(ctx, wtype, kernel_size.second, kernel_size.first, in_channels, out_channels);
         if (bias) {
-            params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_channels);
+            enum ggml_type wtype = GGML_TYPE_F32;  // (tensor_types.find(prefix + "bias") != tensor_types.end()) ? tensor_types[prefix + "bias"] : GGML_TYPE_F32;
+            params["bias"]       = ggml_new_tensor_1d(ctx, wtype, out_channels);
         }
     }
 
@@ -1326,10 +1622,12 @@ protected:
     int64_t dilation;
     bool bias;
 
-    void init_params(struct ggml_context* ctx, ggml_type wtype) {
-        params["weight"] = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, 1, kernel_size, in_channels, out_channels);  // 5d => 4d
+    void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
+        enum ggml_type wtype = GGML_TYPE_F16;                                                              //(tensor_types.find(prefix + "weight") != tensor_types.end()) ? tensor_types[prefix + "weight"] : GGML_TYPE_F16;
+        params["weight"]     = ggml_new_tensor_4d(ctx, wtype, 1, kernel_size, in_channels, out_channels);  // 5d => 4d
         if (bias) {
-            params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_channels);
+            enum ggml_type wtype = GGML_TYPE_F32;  //(tensor_types.find(prefix + "bias") != tensor_types.end()) ? tensor_types[prefix + "bias"] : GGML_TYPE_F32;
+            params["bias"]       = ggml_new_tensor_1d(ctx, wtype, out_channels);
         }
     }
 
@@ -1368,11 +1666,15 @@ protected:
     bool elementwise_affine;
     bool bias;
 
-    void init_params(struct ggml_context* ctx, ggml_type wtype) {
+    void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
         if (elementwise_affine) {
-            params["weight"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, normalized_shape);
+            enum ggml_type wtype = GGML_TYPE_F32;  //(tensor_types.ypes.find(prefix + "weight") != tensor_types.end()) ? tensor_types[prefix + "weight"] : GGML_TYPE_F32;
+            params["weight"]     = ggml_new_tensor_1d(ctx, wtype, normalized_shape);
+            ggml_set_name(params["weight"], (prefix + "weight").c_str());
+
             if (bias) {
-                params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, normalized_shape);
+                enum ggml_type wtype = GGML_TYPE_F32;  //(tensor_types.ypes.find(prefix + "bias") != tensor_types.end()) ? tensor_types[prefix + "bias"] : GGML_TYPE_F32;
+                params["bias"]       = ggml_new_tensor_1d(ctx, wtype, normalized_shape);
             }
         }
     }
@@ -1408,10 +1710,12 @@ protected:
     float eps;
     bool affine;
 
-    void init_params(struct ggml_context* ctx, ggml_type wtype) {
+    void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
         if (affine) {
-            params["weight"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, num_channels);
-            params["bias"]   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, num_channels);
+            enum ggml_type wtype      = GGML_TYPE_F32;  //(tensor_types.find(prefix + "weight") != tensor_types.end()) ? tensor_types[prefix + "weight"] : GGML_TYPE_F32;
+            enum ggml_type bias_wtype = GGML_TYPE_F32;  //(tensor_types.find(prefix + "bias") != tensor_types.end()) ? tensor_types[prefix + "bias"] : GGML_TYPE_F32;
+            params["weight"]          = ggml_new_tensor_1d(ctx, wtype, num_channels);
+            params["bias"]            = ggml_new_tensor_1d(ctx, bias_wtype, num_channels);
         }
     }
 
