@@ -158,73 +158,73 @@ struct SDParams {
 void print_params(SDParams params) {
     char* sample_params_str            = sd_sample_params_to_str(&params.sample_params);
     char* high_noise_sample_params_str = sd_sample_params_to_str(&params.high_noise_sample_params);
-    printf("Option: \n");
-    printf("    n_threads:                         %d\n", params.n_threads);
-    printf("    mode:                              %s\n", modes_str[params.mode]);
-    printf("    model_path:                        %s\n", params.model_path.c_str());
-    printf("    wtype:                             %s\n", params.wtype < SD_TYPE_COUNT ? sd_type_name(params.wtype) : "unspecified");
-    printf("    clip_l_path:                       %s\n", params.clip_l_path.c_str());
-    printf("    clip_g_path:                       %s\n", params.clip_g_path.c_str());
-    printf("    clip_vision_path:                  %s\n", params.clip_vision_path.c_str());
-    printf("    t5xxl_path:                        %s\n", params.t5xxl_path.c_str());
-    printf("    qwen2vl_path:                      %s\n", params.qwen2vl_path.c_str());
-    printf("    qwen2vl_vision_path:               %s\n", params.qwen2vl_vision_path.c_str());
-    printf("    diffusion_model_path:              %s\n", params.diffusion_model_path.c_str());
-    printf("    high_noise_diffusion_model_path:   %s\n", params.high_noise_diffusion_model_path.c_str());
-    printf("    vae_path:                          %s\n", params.vae_path.c_str());
-    printf("    taesd_path:                        %s\n", params.taesd_path.c_str());
-    printf("    esrgan_path:                       %s\n", params.esrgan_path.c_str());
-    printf("    control_net_path:                  %s\n", params.control_net_path.c_str());
-    printf("    embedding_dir:                     %s\n", params.embedding_dir.c_str());
-    printf("    photo_maker_path:                  %s\n", params.photo_maker_path.c_str());
-    printf("    pm_id_images_dir:                  %s\n", params.pm_id_images_dir.c_str());
-    printf("    pm_id_embed_path:                  %s\n", params.pm_id_embed_path.c_str());
-    printf("    pm_style_strength:                 %.2f\n", params.pm_style_strength);
-    printf("    output_path:                       %s\n", params.output_path.c_str());
-    printf("    init_image_path:                   %s\n", params.init_image_path.c_str());
-    printf("    end_image_path:                    %s\n", params.end_image_path.c_str());
-    printf("    mask_image_path:                   %s\n", params.mask_image_path.c_str());
-    printf("    control_image_path:                %s\n", params.control_image_path.c_str());
-    printf("    ref_images_paths:\n");
+   // printf("Option: \n");
+   // printf("    n_threads:                         %d\n", params.n_threads);
+   // printf("    mode:                              %s\n", modes_str[params.mode]);
+   // printf("    model_path:                        %s\n", params.model_path.c_str());
+   // printf("    wtype:                             %s\n", params.wtype < SD_TYPE_COUNT ? sd_type_name(params.wtype) : "unspecified");
+   // printf("    clip_l_path:                       %s\n", params.clip_l_path.c_str());
+   // printf("    clip_g_path:                       %s\n", params.clip_g_path.c_str());
+   // printf("    clip_vision_path:                  %s\n", params.clip_vision_path.c_str());
+   // printf("    t5xxl_path:                        %s\n", params.t5xxl_path.c_str());
+   // printf("    qwen2vl_path:                      %s\n", params.qwen2vl_path.c_str());
+   // printf("    qwen2vl_vision_path:               %s\n", params.qwen2vl_vision_path.c_str());
+   // printf("    diffusion_model_path:              %s\n", params.diffusion_model_path.c_str());
+   // printf("    high_noise_diffusion_model_path:   %s\n", params.high_noise_diffusion_model_path.c_str());
+   // printf("    vae_path:                          %s\n", params.vae_path.c_str());
+   // printf("    taesd_path:                        %s\n", params.taesd_path.c_str());
+   // printf("    esrgan_path:                       %s\n", params.esrgan_path.c_str());
+   // printf("    control_net_path:                  %s\n", params.control_net_path.c_str());
+   // printf("    embedding_dir:                     %s\n", params.embedding_dir.c_str());
+   // printf("    photo_maker_path:                  %s\n", params.photo_maker_path.c_str());
+   // printf("    pm_id_images_dir:                  %s\n", params.pm_id_images_dir.c_str());
+   // printf("    pm_id_embed_path:                  %s\n", params.pm_id_embed_path.c_str());
+   // printf("    pm_style_strength:                 %.2f\n", params.pm_style_strength);
+   // printf("    output_path:                       %s\n", params.output_path.c_str());
+   // printf("    init_image_path:                   %s\n", params.init_image_path.c_str());
+   // printf("    end_image_path:                    %s\n", params.end_image_path.c_str());
+   // printf("    mask_image_path:                   %s\n", params.mask_image_path.c_str());
+   // printf("    control_image_path:                %s\n", params.control_image_path.c_str());
+   // printf("    ref_images_paths:\n");
     for (auto& path : params.ref_image_paths) {
-        printf("        %s\n", path.c_str());
+       // printf("        %s\n", path.c_str());
     };
-    printf("    control_video_path:                %s\n", params.control_video_path.c_str());
-    printf("    auto_resize_ref_image:             %s\n", params.auto_resize_ref_image ? "true" : "false");
-    printf("    increase_ref_index:                %s\n", params.increase_ref_index ? "true" : "false");
-    printf("    offload_params_to_cpu:             %s\n", params.offload_params_to_cpu ? "true" : "false");
-    printf("    clip_on_cpu:                       %s\n", params.clip_on_cpu ? "true" : "false");
-    printf("    control_net_cpu:                   %s\n", params.control_net_cpu ? "true" : "false");
-    printf("    vae_on_cpu:                        %s\n", params.vae_on_cpu ? "true" : "false");
-    printf("    diffusion flash attention:         %s\n", params.diffusion_flash_attn ? "true" : "false");
-    printf("    diffusion Conv2d direct:           %s\n", params.diffusion_conv_direct ? "true" : "false");
-    printf("    vae_conv_direct:                   %s\n", params.vae_conv_direct ? "true" : "false");
-    printf("    control_strength:                  %.2f\n", params.control_strength);
-    printf("    prompt:                            %s\n", params.prompt.c_str());
-    printf("    negative_prompt:                   %s\n", params.negative_prompt.c_str());
-    printf("    clip_skip:                         %d\n", params.clip_skip);
-    printf("    width:                             %d\n", params.width);
-    printf("    height:                            %d\n", params.height);
-    printf("    sample_params:                     %s\n", SAFE_STR(sample_params_str));
-    printf("    high_noise_sample_params:          %s\n", SAFE_STR(high_noise_sample_params_str));
-    printf("    moe_boundary:                      %.3f\n", params.moe_boundary);
-    printf("    prediction:                        %s\n", sd_prediction_name(params.prediction));
-    printf("    flow_shift:                        %.2f\n", params.flow_shift);
-    printf("    strength(img2img):                 %.2f\n", params.strength);
-    printf("    rng:                               %s\n", sd_rng_type_name(params.rng_type));
-    printf("    seed:                              %zd\n", params.seed);
-    printf("    batch_count:                       %d\n", params.batch_count);
-    printf("    vae_tiling:                        %s\n", params.vae_tiling_params.enabled ? "true" : "false");
-    printf("    force_sdxl_vae_conv_scale:         %s\n", params.force_sdxl_vae_conv_scale ? "true" : "false");
-    printf("    upscale_repeats:                   %d\n", params.upscale_repeats);
-    printf("    chroma_use_dit_mask:               %s\n", params.chroma_use_dit_mask ? "true" : "false");
-    printf("    chroma_use_t5_mask:                %s\n", params.chroma_use_t5_mask ? "true" : "false");
-    printf("    chroma_t5_mask_pad:                %d\n", params.chroma_t5_mask_pad);
-    printf("    video_frames:                      %d\n", params.video_frames);
-    printf("    vace_strength:                     %.2f\n", params.vace_strength);
-    printf("    fps:                               %d\n", params.fps);
-    printf("    preview_mode:                      %s (%s)\n", previews_str[params.preview_method], params.preview_noisy ? "noisy" : "denoised");
-    printf("    preview_interval:                  %d\n", params.preview_interval);
+   // printf("    control_video_path:                %s\n", params.control_video_path.c_str());
+   // printf("    auto_resize_ref_image:             %s\n", params.auto_resize_ref_image ? "true" : "false");
+   // printf("    increase_ref_index:                %s\n", params.increase_ref_index ? "true" : "false");
+   // printf("    offload_params_to_cpu:             %s\n", params.offload_params_to_cpu ? "true" : "false");
+   // printf("    clip_on_cpu:                       %s\n", params.clip_on_cpu ? "true" : "false");
+   // printf("    control_net_cpu:                   %s\n", params.control_net_cpu ? "true" : "false");
+   // printf("    vae_on_cpu:                        %s\n", params.vae_on_cpu ? "true" : "false");
+   // printf("    diffusion flash attention:         %s\n", params.diffusion_flash_attn ? "true" : "false");
+   // printf("    diffusion Conv2d direct:           %s\n", params.diffusion_conv_direct ? "true" : "false");
+   // printf("    vae_conv_direct:                   %s\n", params.vae_conv_direct ? "true" : "false");
+   // printf("    control_strength:                  %.2f\n", params.control_strength);
+   // printf("    prompt:                            %s\n", params.prompt.c_str());
+   // printf("    negative_prompt:                   %s\n", params.negative_prompt.c_str());
+   // printf("    clip_skip:                         %d\n", params.clip_skip);
+   // printf("    width:                             %d\n", params.width);
+   // printf("    height:                            %d\n", params.height);
+   // printf("    sample_params:                     %s\n", SAFE_STR(sample_params_str));
+   // printf("    high_noise_sample_params:          %s\n", SAFE_STR(high_noise_sample_params_str));
+   // printf("    moe_boundary:                      %.3f\n", params.moe_boundary);
+   // printf("    prediction:                        %s\n", sd_prediction_name(params.prediction));
+   // printf("    flow_shift:                        %.2f\n", params.flow_shift);
+   // printf("    strength(img2img):                 %.2f\n", params.strength);
+   // printf("    rng:                               %s\n", sd_rng_type_name(params.rng_type));
+   // printf("    seed:                              %zd\n", params.seed);
+   // printf("    batch_count:                       %d\n", params.batch_count);
+   // printf("    vae_tiling:                        %s\n", params.vae_tiling_params.enabled ? "true" : "false");
+   // printf("    force_sdxl_vae_conv_scale:         %s\n", params.force_sdxl_vae_conv_scale ? "true" : "false");
+   // printf("    upscale_repeats:                   %d\n", params.upscale_repeats);
+   // printf("    chroma_use_dit_mask:               %s\n", params.chroma_use_dit_mask ? "true" : "false");
+   // printf("    chroma_use_t5_mask:                %s\n", params.chroma_use_t5_mask ? "true" : "false");
+   // printf("    chroma_t5_mask_pad:                %d\n", params.chroma_t5_mask_pad);
+   // printf("    video_frames:                      %d\n", params.video_frames);
+   // printf("    vace_strength:                     %.2f\n", params.vace_strength);
+   // printf("    fps:                               %d\n", params.fps);
+   // printf("    preview_mode:                      %s (%s)\n", previews_str[params.preview_method], params.preview_noisy ? "noisy" : "denoised");
+   // printf("    preview_interval:                  %d\n", params.preview_interval);
     free(sample_params_str);
     free(high_noise_sample_params_str);
 }
@@ -1327,7 +1327,7 @@ void sd_log_cb(enum sd_log_level_t level, const char* log, void* data) {
     SDParams* params = (SDParams*)data;
     int tag_color;
     const char* level_str;
-    FILE* out_stream = (level == SD_LOG_ERROR) ? stderr : stdout;
+    FILE* out_stream = stderr;//(level == SD_LOG_ERROR) ? stderr : stdout;
 
     if (!log || (!params->verbose && level <= SD_LOG_DEBUG)) {
         return;
@@ -1363,6 +1363,14 @@ void sd_log_cb(enum sd_log_level_t level, const char* log, void* data) {
     }
     fputs(log, out_stream);
     fflush(out_stream);
+}
+
+void no_progress(int step, int steps, float time, void* data) {
+    (void)step;
+    (void)steps;
+    (void)time;
+    (void)data;
+    return;
 }
 
 uint8_t* load_image(const char* image_path, int& width, int& height, int expected_width = 0, int expected_height = 0, int expected_channel = 3) {
@@ -1410,7 +1418,7 @@ uint8_t* load_image(const char* image_path, int& width, int& height, int expecte
         }
 
         if (crop_x != 0 || crop_y != 0) {
-            printf("crop input image from %dx%d to %dx%d, image_path = %s\n", width, height, crop_w, crop_h, image_path);
+           // printf("crop input image from %dx%d to %dx%d, image_path = %s\n", width, height, crop_w, crop_h, image_path);
             uint8_t* cropped_image_buffer = (uint8_t*)malloc(crop_w * crop_h * expected_channel);
             if (cropped_image_buffer == nullptr) {
                 fprintf(stderr, "error: allocate memory for crop\n");
@@ -1429,7 +1437,7 @@ uint8_t* load_image(const char* image_path, int& width, int& height, int expecte
             image_buffer = cropped_image_buffer;
         }
 
-        printf("resize input image from %dx%d to %dx%d\n", width, height, expected_width, expected_height);
+        //printf("resize input image from %dx%d to %dx%d\n", width, height, expected_width, expected_height);
         int resized_height = expected_height;
         int resized_width  = expected_width;
 
@@ -1483,7 +1491,7 @@ bool load_images_from_dir(const std::string dir,
 
         if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp") {
             if (verbose) {
-                printf("load image %zu from '%s'\n", images.size(), path.c_str());
+               // printf("load image %zu from '%s'\n", images.size(), path.c_str());
             }
             int width             = 0;
             int height            = 0;
@@ -1549,11 +1557,12 @@ int main(int argc, const char* argv[]) {
     params.high_noise_sample_params.guidance.slg.layer_count = params.high_noise_skip_layers.size();
 
     sd_set_log_callback(sd_log_cb, (void*)&params);
+    sd_set_progress_callback((sd_progress_cb_t)no_progress, NULL);
     sd_set_preview_callback((sd_preview_cb_t)step_callback, params.preview_method, params.preview_interval, !params.preview_noisy, params.preview_noisy);
 
     if (params.verbose) {
         print_params(params);
-        printf("%s", sd_get_system_info());
+       // printf("%s", sd_get_system_info());
     }
 
     if (params.mode == CONVERT) {
@@ -1566,7 +1575,7 @@ int main(int argc, const char* argv[]) {
                     params.output_path.c_str());
             return 1;
         } else {
-            printf("convert '%s'/'%s' to '%s' success\n",
+           // printf("convert '%s'/'%s' to '%s' success\n",
                    params.model_path.c_str(),
                    params.vae_path.c_str(),
                    params.output_path.c_str());
@@ -1760,7 +1769,7 @@ int main(int argc, const char* argv[]) {
         num_results = 1;
         results     = (sd_image_t*)calloc(num_results, sizeof(sd_image_t));
         if (results == nullptr) {
-            printf("failed to allocate results array\n");
+           // printf("failed to allocate results array\n");
             release_all_resources();
             return 1;
         }
@@ -1771,7 +1780,7 @@ int main(int argc, const char* argv[]) {
         sd_ctx_t* sd_ctx = new_sd_ctx(&sd_ctx_params);
 
         if (sd_ctx == nullptr) {
-            printf("new_sd_ctx_t failed\n");
+           // printf("new_sd_ctx_t failed\n");
             release_all_resources();
             return 1;
         }
@@ -1834,7 +1843,7 @@ int main(int argc, const char* argv[]) {
         }
 
         if (results == nullptr) {
-            printf("generate failed\n");
+           // printf("generate failed\n");
             free_sd_ctx(sd_ctx);
             return 1;
         }
@@ -1850,7 +1859,7 @@ int main(int argc, const char* argv[]) {
                                                         params.n_threads);
 
         if (upscaler_ctx == nullptr) {
-            printf("new_upscaler_ctx failed\n");
+           // printf("new_upscaler_ctx failed\n");
         } else {
             for (int i = 0; i < num_results; i++) {
                 if (results[i].data == nullptr) {
@@ -1860,7 +1869,7 @@ int main(int argc, const char* argv[]) {
                 for (int u = 0; u < params.upscale_repeats; ++u) {
                     sd_image_t upscaled_image = upscale(upscaler_ctx, current_image, upscale_factor);
                     if (upscaled_image.data == nullptr) {
-                        printf("upscale failed\n");
+                       // printf("upscale failed\n");
                         break;
                     }
                     free(current_image.data);
@@ -1909,7 +1918,7 @@ int main(int argc, const char* argv[]) {
             vid_output_path = base_path + ".avi";
         }
         create_mjpg_avi_from_sd_images(vid_output_path.c_str(), results, num_results, params.fps);
-        printf("save result MJPG AVI video to '%s'\n", vid_output_path.c_str());
+       // printf("save result MJPG AVI video to '%s'\n", vid_output_path.c_str());
     } else {
         // appending ".png" to absent or unknown extension
         if (!is_jpg && file_ext_lower != ".png") {
@@ -1924,11 +1933,11 @@ int main(int argc, const char* argv[]) {
             if (is_jpg) {
                 stbi_write_jpg(final_image_path.c_str(), results[i].width, results[i].height, results[i].channel,
                                results[i].data, 90, get_image_params(params, params.seed + i).c_str());
-                printf("save result JPEG image to '%s'\n", final_image_path.c_str());
+               // printf("save result JPEG image to '%s'\n", final_image_path.c_str());
             } else {
                 stbi_write_png(final_image_path.c_str(), results[i].width, results[i].height, results[i].channel,
                                results[i].data, 0, get_image_params(params, params.seed + i).c_str());
-                printf("save result PNG image to '%s'\n", final_image_path.c_str());
+               // printf("save result PNG image to '%s'\n", final_image_path.c_str());
             }
         }
     }

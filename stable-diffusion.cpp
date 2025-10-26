@@ -1,5 +1,8 @@
+#include "ggml.h"
 #include "ggml_extend.hpp"
 
+#include <cmath>
+#include <cstdint>
 #include "model.h"
 #include "rng.hpp"
 #include "rng_philox.hpp"
@@ -1867,8 +1870,69 @@ public:
     }
 
     ggml_tensor* encode_first_stage(ggml_context* work_ctx, ggml_tensor* x, bool encode_video = false) {
-        ggml_tensor* vae_output = vae_encode(work_ctx, x, encode_video);
-        return get_first_stage_encoding(work_ctx, vae_output);
+        auto sd_preview_cb      = sd_get_preview_callback();
+        uint32_t W              = x->ne[0] / get_vae_scale_factor();
+        uint32_t H              = x->ne[1] / get_vae_scale_factor();
+        uint32_t C              = get_latent_channel();
+        ggml_tensor* y = ggml_dup_tensor(work_ctx, x);
+        copy_ggml_tensor(y,x);
+        ggml_tensor* vae_output = vae_encode(work_ctx, y, encode_video);
+
+        auto result = get_first_stage_encoding(work_ctx, vae_output);
+
+        int frames         = 1;
+        if (ggml_n_dims(result) == 4) {
+            frames = result->ne[2];
+        }
+        sd_image_t* images = (sd_image_t*)malloc(frames * sizeof(sd_image_t));
+        uint8_t* data      = (uint8_t*)malloc(frames * W * H * 3 * sizeof(uint8_t));
+        int data_off       = 0;
+        for (int k = 0; k < frames; k++) {
+            for (int j = 0; j < H; j++) {
+                for (int i = 0; i < W; i++) {
+                    size_t latent_id               = (i * result->nb[0] + j * result->nb[1] + k * result->nb[2]);
+                    std::vector<double> downscaled = {0, 0, 0};
+                    double count                   = 0;
+                    float px_frame = k*4;
+                    for (int dj = j * get_vae_scale_factor(); dj < (j + 1) * get_vae_scale_factor(); dj++) {
+                        for (int di = i * get_vae_scale_factor(); di < (i + 1) * get_vae_scale_factor(); di++) {
+                            for (int c = 0; c < 3; c++) {
+                                float value = ggml_tensor_get_f32(x, di, dj, c, px_frame);
+                                downscaled[c] += value * value;
+                            }
+                            count++;
+                        }
+                    }
+                    for (int c = 0; c < 3; c++) {
+                        double value     = sqrt(downscaled[c] / count);
+                        downscaled[c] = value;
+                        data[data_off++] = (uint8_t)(255. * value);
+                    }
+                    std::vector<double> latent = {};
+                    for (int d = 0; d < C; d++) {
+                        float value = *(float*)((char*)result->data + latent_id + d * result->nb[ggml_n_dims(result) - 1]);
+                        latent.push_back(value);
+                    }
+
+                    //printf("%d,%d,%d,", i, j, k); // Position
+                    printf("%.6f, %.6f, %.6f,    ", downscaled[0], downscaled[1], downscaled[2]); // RGB
+                    for (size_t d = 0; d < latent.size(); d++) {
+                        printf("%.6f", latent[d]);
+                        if (d < latent.size() - 1) printf(", ");
+                    }
+                    printf("\n");
+                }
+            }
+        }
+        for (int i = 0; i < frames; i++) {
+            images[i] = {W, H, 3, data + i * W * H * 3};
+        }
+        sd_preview_cb(0, frames, images, false);
+        free(data);
+        free(images);
+
+        exit(0);
+        return result;
     }
 
     ggml_tensor* decode_first_stage(ggml_context* work_ctx, ggml_tensor* x, bool decode_video = false) {
