@@ -2579,9 +2579,12 @@ void start_server(SDParams& params) {
             if (g_task_results.find(task_id) != g_task_results.end()) {
                 json result = g_task_results[task_id];
                 res.set_content(result.dump(), "application/json");
-                // Erase data after sending
-                result["data"]          = json::array();
-                g_task_results[task_id] = result;
+
+                if (g_task_results[task_id]["status"] == "Completed" ||
+                   g_task_results[task_id]["status"] == "Failed") {
+                    // Remove completed or failed tasks from the results map to free memory
+                    g_task_results.erase(task_id);
+                }
             } else {
                 res.set_content("Cannot find task " + task_id + " in queue", "text/plain");
                 res.status = 404;
