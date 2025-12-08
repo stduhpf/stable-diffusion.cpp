@@ -649,44 +649,6 @@ void parse_args(int argc, const char** argv, SDParams& params) {
         params.ctxParams.n_threads = sd_get_num_physical_cores();
     }
 
-    if (params.lastRequest.prompt.length() == 0) {
-        fprintf(stderr, "error: the following arguments are required: prompt\n");
-        print_usage(argc, argv, options);
-        exit(1);
-    }
-
-    if (params.ctxParams.model_path.length() == 0 && params.ctxParams.diffusion_model_path.length() == 0) {
-        fprintf(stderr, "error: the following arguments are required: model_path/diffusion_model\n");
-        print_usage(argc, argv, options);
-        exit(1);
-    }
-
-    if (params.output_path.length() == 0) {
-        fprintf(stderr, "error: the following arguments are required: output_path\n");
-        print_usage(argc, argv, options);
-        exit(1);
-    }
-
-    if (params.lastRequest.height <= 0) {
-        fprintf(stderr, "error: the height must be greater than 0\n");
-        exit(1);
-    }
-
-    if (params.lastRequest.width <= 0) {
-        fprintf(stderr, "error: the width must be greater than 0\n");
-        exit(1);
-    }
-
-    if (params.lastRequest.sample_params.sample_steps <= 0) {
-        fprintf(stderr, "error: the sample_steps must be greater than 0\n");
-        exit(1);
-    }
-
-    if (params.lastRequest.strength < 0.f || params.lastRequest.strength > 1.f) {
-        fprintf(stderr, "error: can only work with strength in [0.0, 1.0]\n");
-        exit(1);
-    }
-
     if (params.lastRequest.seed < 0) {
         srand((int)time(nullptr));
         params.lastRequest.seed = rand();
@@ -2617,9 +2579,12 @@ void start_server(SDParams& params) {
             if (g_task_results.find(task_id) != g_task_results.end()) {
                 json result = g_task_results[task_id];
                 res.set_content(result.dump(), "application/json");
-                // Erase data after sending
-                result["data"]          = json::array();
-                g_task_results[task_id] = result;
+
+                if (g_task_results[task_id]["status"] == "Completed" ||
+                   g_task_results[task_id]["status"] == "Failed") {
+                    // Remove completed or failed tasks from the results map to free memory
+                    g_task_results.erase(task_id);
+                }
             } else {
                 res.set_content("Cannot find task " + task_id + " in queue", "text/plain");
                 res.status = 404;
