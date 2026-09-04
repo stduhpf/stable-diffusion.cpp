@@ -1087,7 +1087,7 @@ struct TinyVideoAutoEncoder : public VAE {
         ggml_cgraph* gf = nullptr;
         ggml_tensor* z  = make_input(z_tensor);
         if (decode_graph) {
-            int64_t passes = taehv.parallel ? 1 : z->ne[3];
+            int64_t passes = taehv.parallel ? 1 : z->ne[2];
             gf             = ggml_new_graph_custom(compute_ctx, (is_wide ? 4096 : 2048) * passes, false);
         } else {
             int64_t frames = z->ne[2];
