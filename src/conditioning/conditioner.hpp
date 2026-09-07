@@ -162,9 +162,9 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
     std::shared_ptr<CLIPTextModelRunner> text_model2;
 
     std::map<std::string, std::string> embedding_map;
-    int32_t num_custom_embeddings   = 0;
-    int32_t num_custom_embeddings_2 = 0;
+    int32_t num_custom_embeddings = 0;
     std::vector<uint8_t> token_embed_custom;
+    std::vector<uint8_t> token_embed_custom2;
     std::map<std::string, std::pair<int, int>> embedding_pos_map;
 
     FrozenCLIPEmbedderWithCustomWords(ggml_backend_t backend,
@@ -251,74 +251,93 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
             LOG_ERROR("embedding '%s' failed", embd_name.c_str());
             return false;
         }
+        auto push_ids = [&](int pos_start, int pos_end, bool cached) {
+            for (int i = pos_start; i < pos_end; i++) {
+                bpe_tokens.push_back(text_model->model.vocab_size + i);
+            }
+            if (!cached) {
+                LOG_VERBOSE("embedding '%s' applied: %i token(s), custom embeddings: %i", embd_name.c_str(), pos_end - pos_start, num_custom_embeddings);
+            }
+        };
         auto iter = embedding_pos_map.find(embd_name);
         if (iter != embedding_pos_map.end()) {
             LOG_VERBOSE("embedding already read in: %s", embd_name.c_str());
-            for (int i = iter->second.first; i < iter->second.second; i++) {
-                bpe_tokens.push_back(text_model->model.vocab_size + i);
-            }
+            push_ids(iter->second.first, iter->second.second, true);
             return true;
         }
         ggml_init_params params;
-        params.mem_size        = 100 * 1024 * 1024;  // max for custom embeddings 100 MB
-        params.mem_buffer      = nullptr;
-        params.no_alloc        = false;
-        ggml_context* embd_ctx = ggml_init(params);
-        ggml_tensor* embd      = nullptr;
-        ggml_tensor* embd2     = nullptr;
-        auto on_load           = [&](const TensorStorage& tensor_storage, ggml_tensor** dst_tensor) {
-            if (tensor_storage.ne[0] != text_model->model.hidden_size) {
-                if (text_model2) {
-                    if (tensor_storage.ne[0] == text_model2->model.hidden_size) {
-                        embd2       = ggml_new_tensor_2d(embd_ctx, tensor_storage.type, text_model2->model.hidden_size, tensor_storage.n_dims > 1 ? tensor_storage.ne[1] : 1);
-                        *dst_tensor = embd2;
-                    } else {
-                        LOG_VERBOSE("embedding wrong hidden size, got %i, expected %i or %i", tensor_storage.ne[0], text_model->model.hidden_size, text_model2->model.hidden_size);
-                        return false;
-                    }
-                } else {
-                    LOG_VERBOSE("embedding wrong hidden size, got %i, expected %i", tensor_storage.ne[0], text_model->model.hidden_size);
+        params.mem_size       = 100 * 1024 * 1024;  // max for custom embeddings 100 MB
+        params.mem_buffer     = nullptr;
+        params.no_alloc       = false;
+        auto ggml_ctx_deleter = [](ggml_context* ctx) { ggml_free(ctx); };
+        auto embd_ctx         = std::unique_ptr<ggml_context, decltype(ggml_ctx_deleter)>(ggml_init(params), ggml_ctx_deleter);
+        if (!embd_ctx.get()) {
+            LOG_ERROR("ggml_init failed when loading embeddings file");
+            return false;
+        }
+        ggml_tensor* embd    = nullptr;
+        ggml_tensor* embd2   = nullptr;
+        ggml_type embd_type  = text_model->model.get_token_embed_weight()->type;
+        ggml_type embd2_type = text_model2 ? text_model2->model.get_token_embed_weight()->type : embd_type;
+        int64_t hidden_size  = text_model->model.hidden_size;
+        int64_t hidden_size2 = text_model2 ? text_model2->model.hidden_size : 0;
+        auto on_load         = [&](const TensorStorage& tensor_storage, ggml_tensor** dst_tensor) {
+            if (tensor_storage.ne[0] == hidden_size) {
+                embd = ggml_new_tensor_2d(embd_ctx.get(), embd_type, hidden_size, tensor_storage.n_dims > 1 ? tensor_storage.ne[1] : 1);
+                if (embd == nullptr) {
                     return false;
                 }
-            } else {
-                embd        = ggml_new_tensor_2d(embd_ctx, tensor_storage.type, text_model->model.hidden_size, tensor_storage.n_dims > 1 ? tensor_storage.ne[1] : 1);
                 *dst_tensor = embd;
+            } else if (text_model2) {
+                if (tensor_storage.ne[0] == hidden_size2) {
+                    embd2 = ggml_new_tensor_2d(embd_ctx.get(), embd2_type, hidden_size2, tensor_storage.n_dims > 1 ? tensor_storage.ne[1] : 1);
+                    if (embd2 == nullptr) {
+                        return false;
+                    }
+                    *dst_tensor = embd2;
+                } else {
+                    LOG_VERBOSE("embedding skipped, wrong hidden size, got %i, expected %i or %i", tensor_storage.ne[0], hidden_size, hidden_size2);
+                }
+            } else {
+                LOG_VERBOSE("embedding skipped, wrong hidden size, got %i, expected %i", tensor_storage.ne[0], hidden_size);
             }
             return true;
         };
         model_loader.set_n_threads(1);
-        model_loader.load_tensors(on_load);
-        int pos_start = num_custom_embeddings;
-        if (embd) {
-            int64_t hidden_size = text_model->model.hidden_size;
-            token_embed_custom.resize(token_embed_custom.size() + ggml_nbytes(embd));
-            memcpy((void*)(token_embed_custom.data() + num_custom_embeddings * hidden_size * ggml_type_size(embd->type)),
-                   embd->data,
-                   ggml_nbytes(embd));
-            for (int i = 0; i < embd->ne[1]; i++) {
-                bpe_tokens.push_back(text_model->model.vocab_size + num_custom_embeddings);
-                // LOG_VERBOSE("new custom token: %i", text_model.vocab_size + num_custom_embeddings);
-                num_custom_embeddings++;
-            }
-            LOG_VERBOSE("embedding '%s' applied, custom embeddings: %i", embd_name.c_str(), num_custom_embeddings);
-        }
-        if (embd2) {
-            int64_t hidden_size = text_model2->model.hidden_size;
-            token_embed_custom.resize(token_embed_custom.size() + ggml_nbytes(embd2));
-            memcpy((void*)(token_embed_custom.data() + num_custom_embeddings_2 * hidden_size * ggml_type_size(embd2->type)),
-                   embd2->data,
-                   ggml_nbytes(embd2));
-            for (int i = 0; i < embd2->ne[1]; i++) {
-                bpe_tokens.push_back(text_model2->model.vocab_size + num_custom_embeddings_2);
-                // LOG_VERBOSE("new custom token: %i", text_model.vocab_size + num_custom_embeddings);
-                num_custom_embeddings_2++;
-            }
-            LOG_VERBOSE("embedding '%s' applied, custom embeddings: %i (text model 2)", embd_name.c_str(), num_custom_embeddings_2);
-        }
-        int pos_end = num_custom_embeddings;
-        if (pos_end == pos_start) {
+        if (!model_loader.load_tensors(on_load)) {
+            LOG_ERROR("embedding '%s' failed", embd_name.c_str());
             return false;
         }
+        if (!embd && !embd2) {
+            LOG_WARN("embedding '%s' has no usable tensor", embd_name.c_str());
+            return false;
+        }
+        int pos_start      = num_custom_embeddings;
+        int64_t embd_rows  = embd ? embd->ne[1] : 0;
+        int64_t embd2_rows = embd2 ? embd2->ne[1] : 0;
+        if (embd_rows < embd2_rows) {
+            LOG_WARN("embedding '%s' has fewer rows for text model 1, zero-padding", embd_name.c_str());
+        } else if (text_model2 && embd2_rows < embd_rows) {
+            LOG_WARN("embedding '%s' has fewer rows for text model 2, zero-padding", embd_name.c_str());
+        }
+        int64_t rows      = std::max(embd_rows, embd2_rows);
+        size_t embd_bytes = hidden_size * ggml_type_size(embd_type);
+        token_embed_custom.resize(token_embed_custom.size() + embd_bytes * rows);
+        if (embd) {
+            memcpy((void*)(token_embed_custom.data() + embd_bytes * num_custom_embeddings),
+                   embd->data, embd_bytes * embd_rows);
+        }
+        if (text_model2) {
+            size_t embd2_bytes = hidden_size2 * ggml_type_size(embd2_type);
+            token_embed_custom2.resize(token_embed_custom2.size() + embd2_bytes * rows);
+            if (embd2) {
+                memcpy((void*)(token_embed_custom2.data() + embd2_bytes * num_custom_embeddings),
+                       embd2->data, embd2_bytes * embd2_rows);
+            }
+        }
+        num_custom_embeddings += (int)rows;
+        int pos_end = num_custom_embeddings;
+        push_ids(pos_start, pos_end, false);
         embedding_pos_map[embd_name] = std::pair{pos_start, pos_end};
         return true;
     }
@@ -461,7 +480,7 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
                     auto chunk_hidden_states2 = text_model2->compute(n_threads,
                                                                      input_ids2,
                                                                      num_custom_embeddings,
-                                                                     token_embed_custom.data(),
+                                                                     token_embed_custom2.data(),
                                                                      max_token_idx,
                                                                      false,
                                                                      clip_skip,
@@ -473,7 +492,7 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
                         pooled = text_model2->compute(n_threads,
                                                       input_ids2,
                                                       num_custom_embeddings,
-                                                      token_embed_custom.data(),
+                                                      token_embed_custom2.data(),
                                                       max_token_idx,
                                                       true,
                                                       clip_skip,
